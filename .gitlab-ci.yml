@@ -6,6 +6,11 @@ stages:
 - build
 - release
 
+job:
+  stage: prepare
+  script:
+    - echo 'hello'
+
 variables:
   USE_CONTAINER: "true"
   CI_IMAGE: registry.gitlab.com/gitlab-org/ci-cd/docker-machine/ci:alpine3.10
