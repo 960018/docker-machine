@@ -1,8 +1,8 @@
 image: docker:19.03.2
 
 stages:
-- prepare
-- validate
+#- prepare
+#- validate
 - build
 - release
 
@@ -76,11 +76,11 @@ variables:
 
 .release_S3:
   dependencies:
-  - linux amd64
-  - linux arm
+#  - linux amd64
+#  - linux arm
   - linux arm64
-  - windows amd64
-  - darwin amd64
+#  - windows amd64
+#  - darwin amd64
   variables:
     S3_URL: s3://${S3_BUCKET}/${CI_COMMIT_REF_NAME}
   script:
@@ -88,25 +88,25 @@ variables:
   environment:
     url: https://${S3_BUCKET}.s3.amazonaws.com/${CI_COMMIT_REF_NAME}/index.html
 
-prepare CI image:
-  extends:
-  - .docker_in_docker
-  - .merge_request_pipelines
-  stage: prepare
-  script:
-  - docker build --pull --no-cache -t ${CI_IMAGE} -f ./.gitlab/ci/Dockerfile ./.gitlab/ci/
-  - docker login --username ${CI_REGISTRY_USER} --password ${CI_REGISTRY_PASSWORD} ${CI_REGISTRY}
-  - docker push ${CI_IMAGE}
-  - docker logout ${CI_REGISTRY}
-  only:
-    changes:
-    - ./gitlab/ci/Dockerfile
-    - .gitlab-ci.yml
+# prepare CI image:
+#   extends:
+#   - .docker_in_docker
+#   - .merge_request_pipelines
+#   stage: prepare
+#   script:
+#   - docker build --pull --no-cache -t ${CI_IMAGE} -f ./.gitlab/ci/Dockerfile ./.gitlab/ci/
+#   - docker login --username ${CI_REGISTRY_USER} --password ${CI_REGISTRY_PASSWORD} ${CI_REGISTRY}
+#   - docker push ${CI_IMAGE}
+#   - docker logout ${CI_REGISTRY}
+#   only:
+#     changes:
+#     - ./gitlab/ci/Dockerfile
+#     - .gitlab-ci.yml
 
-linux amd64: *build_validate
-darwin amd64: *build_x
-windows amd64: *build_x
-linux arm: *build_x
+#linux amd64: *build_validate
+#darwin amd64: *build_x
+#windows amd64: *build_x
+#linux arm: *build_x
 linux arm64: *build_x
 
 release development S3:
