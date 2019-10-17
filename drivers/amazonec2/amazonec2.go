@@ -791,6 +791,10 @@ func (d *Driver) GetURL() (string, error) {
 }
 
 func (d *Driver) GetIP() (string, error) {
+	if d.IPAddress != "" {
+		return d.IPAddress, nil
+	}
+
 	inst, err := d.getInstance()
 	if err != nil {
 		return "", err
