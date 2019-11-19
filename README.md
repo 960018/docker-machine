@@ -58,7 +58,25 @@ staging   -        digitalocean   Running   tcp://203.0.113.81:2376             
 
 ## Installation and documentation
 
-Full documentation [is available here](https://docs.docker.com/machine/).
+~~Full documentation [is available here](https://docs.docker.com/machine/).~~
+
+This repository is a fork with its own [released binaries](https://gitlab.com/gitlab-org/ci-cd/docker-machine/-/releases). Keep that in mind if you're following [docker's installation instructions ](https://docs.docker.com/machine/).
+
+1. Install [Docker](https://docs.docker.com/engine/installation/)
+1. Download the Docker Machine binary and extract it to your PATH.
+   - If you are running **Linux**:
+   ```console
+   $ base=https://gitlab-docker-machine-downloads.s3.amazonaws.com/master/docker-machine && \
+   curl -L $base >/tmp/docker-machine && \
+   sudo mv /tmp/docker-machine /usr/local/bin/docker-machine && \
+   chmod +x /usr/local/bin/docker-machine
+   ```
+1. Check the installation by displaying the Machine version:
+   ```console
+   $ docker-machine version
+   docker-machine version 0.16.2-gitlab.3, build 848548fe
+   ```
+
 
 ## Contributing
 
