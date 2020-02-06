@@ -5,7 +5,15 @@ set -eo pipefail
 VERSION="$(./.gitlab/ci/scripts/version.sh 2>/dev/null || echo 'dev')"
 
 # Generate Index page.
-go run ./.gitlab/ci/scripts/generate-index-file/main.go bin/ ${VERSION} ${CI_COMMIT_REF_NAME} ${CI_COMMIT_SHA}
+go get gitlab.com/gitlab-org/ci-cd/runner-tools/release-index-generator/cmd/release-index-gen
+release-index-gen -working-directory bin/ \
+                  -project-version ${VERSION} \
+                  -project-git-ref ${CI_COMMIT_REF_NAME} \
+                  -project-git-revision ${CI_COMMIT_SHA} \
+                  -project-name "Docker Machine (GitLab's fork)" \
+                  -project-repo-url "https://gitlab.com/gitlab-org/ci-cd/docker-machine" \
+                  -gpg-key-env GPG_KEY \
+                  -gpg-password-env GPG_PASSPHRASE
 
 echo "Generated Index page"
 
