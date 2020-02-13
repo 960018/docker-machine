@@ -3,6 +3,7 @@ package amazonec2
 import (
 	"errors"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -37,6 +38,43 @@ func TestConfigureSecurityGroupPermissionsEmpty(t *testing.T) {
 
 	assert.Nil(t, err)
 	assert.Len(t, perms, 2)
+}
+
+func TestFailedSpotInstanceRequest(t *testing.T) {
+
+	// Create key
+	dir, err := ioutil.TempDir("", "awsuserdata")
+	log.Printf("dir: %#+v\n", dir)
+	assert.NoError(t, err, "Unable to create temporary directory.")
+
+	defer os.RemoveAll(dir)
+
+	privKeyPath := filepath.Join(dir, "key")
+	pubKeyPath := filepath.Join(dir, "key.pub")
+
+	content := []byte("junkyjunkyjunk\n")
+
+	err = ioutil.WriteFile(privKeyPath, content, 0666)
+	assert.NoError(t, err, "Unable to create temporary userdata file.")
+
+	err = ioutil.WriteFile(pubKeyPath, content, 0666)
+	assert.NoError(t, err, "Unable to create temporary userdata file.")
+
+	recorder := fakeEC2SecurityGroupTestRecorder{}
+
+	driver := NewCustomTestDriver(&recorder)
+	driver.SecurityGroupNames = []string{}
+
+	driver.SSHPrivateKeyPath = privKeyPath
+	driver.SSHKeyPath = pubKeyPath
+	driver.KeyName = "foo"
+
+	driver.RequestSpotInstance = true
+
+	err = driver.innerCreate()
+	log.Printf("err: %#+v\n", err)
+
+	assert.Nil(t, nil)
 }
 
 func TestConfigureSecurityGroupPermissionsSshOnly(t *testing.T) {
