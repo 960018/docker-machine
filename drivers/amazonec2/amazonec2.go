@@ -566,6 +566,7 @@ func migrateStringToSlice(value string, values []string) (result []string) {
 }
 
 func (d *Driver) securityGroupNames() (ids []string) {
+	fmt.Println("FOO: ", d.SecurityGroupName) //, d.SecurityGroupNames)
 	return migrateStringToSlice(d.SecurityGroupName, d.SecurityGroupNames)
 }
 
@@ -663,6 +664,7 @@ func (d *Driver) innerCreate() error {
 			req.BlockDurationMinutes = &d.BlockDurationMinutes
 		}
 
+		fmt.Println(req)
 		spotInstanceRequest, err := d.getClient().RequestSpotInstances(&req)
 		if err != nil {
 			return fmt.Errorf("Error request spot instance: %v", err)
