@@ -3,7 +3,6 @@ package amazonec2
 import (
 	"errors"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -40,29 +39,30 @@ func TestConfigureSecurityGroupPermissionsEmpty(t *testing.T) {
 	assert.Len(t, perms, 2)
 }
 
-func TestFailedSpotInstanceRequest(t *testing.T) {
-
+func setupTestFailedSpotInstanceRequest() (*Driver, func()) {
 	// Create key
-	dir, err := ioutil.TempDir("", "awsuserdata")
-	log.Printf("dir: %#+v\n", dir)
-	assert.NoError(t, err, "Unable to create temporary directory.")
-
-	defer os.RemoveAll(dir)
+	dir, _ := ioutil.TempDir("", "awsuserdata")
+	// assert.NoError(t, err, "Unable to create temporary directory.")
 
 	privKeyPath := filepath.Join(dir, "key")
 	pubKeyPath := filepath.Join(dir, "key.pub")
 
-	content := []byte("junkyjunkyjunk\n")
+	content := []byte("test\n")
 
-	err = ioutil.WriteFile(privKeyPath, content, 0666)
-	assert.NoError(t, err, "Unable to create temporary userdata file.")
+	_ = ioutil.WriteFile(privKeyPath, content, 0666)
+	// assert.NoError(t, err, "Unable to create temporary userdata file.")
 
-	err = ioutil.WriteFile(pubKeyPath, content, 0666)
-	assert.NoError(t, err, "Unable to create temporary userdata file.")
+	_ = ioutil.WriteFile(pubKeyPath, content, 0666)
+	// assert.NoError(t, err, "Unable to create temporary userdata file.")
 
-	recorder := fakeEC2SecurityGroupTestRecorder{}
+	driver := NewDriver("machineFoo", "path")
+	driver.clientFactory = func() Ec2Client {
+		return &fakeEC2SpotInstance{
+			output: nil,
+			err:    nil,
+		}
+	}
 
-	driver := NewCustomTestDriver(&recorder)
 	driver.SecurityGroupNames = []string{}
 
 	driver.SSHPrivateKeyPath = privKeyPath
@@ -71,10 +71,18 @@ func TestFailedSpotInstanceRequest(t *testing.T) {
 
 	driver.RequestSpotInstance = true
 
-	err = driver.innerCreate()
-	log.Printf("err: %#+v\n", err)
+	return driver, func() {
+		os.RemoveAll(dir)
+	}
+}
 
-	assert.Nil(t, nil)
+func TestFailedSpotInstanceRequest(t *testing.T) {
+
+	driver, cleanup := setupTestFailedSpotInstanceRequest()
+	defer cleanup()
+
+	err := driver.innerCreate()
+	assert.NotNil(t, err)
 }
 
 func TestConfigureSecurityGroupPermissionsSshOnly(t *testing.T) {
