@@ -566,6 +566,7 @@ func migrateStringToSlice(value string, values []string) (result []string) {
 }
 
 func (d *Driver) securityGroupNames() (ids []string) {
+	fmt.Println("FOO: ", d.SecurityGroupName) //, d.SecurityGroupNames)
 	return migrateStringToSlice(d.SecurityGroupName, d.SecurityGroupNames)
 }
 
@@ -663,9 +664,13 @@ func (d *Driver) innerCreate() error {
 			req.BlockDurationMinutes = &d.BlockDurationMinutes
 		}
 
+		fmt.Println(req)
 		spotInstanceRequest, err := d.getClient().RequestSpotInstances(&req)
 		if err != nil {
-			return fmt.Errorf("Error request spot instance: %s", err)
+			return fmt.Errorf("Error request spot instance: %v", err)
+		}
+		if spotInstanceRequest == nil || len((*spotInstanceRequest).SpotInstanceRequests) < 1 {
+			return fmt.Errorf("Error requesting spot instance: %v", errors.New("Unexpected AWS API response"))
 		}
 		d.spotInstanceRequestId = *spotInstanceRequest.SpotInstanceRequests[0].SpotInstanceRequestId
 
@@ -741,7 +746,10 @@ func (d *Driver) innerCreate() error {
 		})
 
 		if err != nil {
-			return fmt.Errorf("Error launching instance: %s", err)
+			return fmt.Errorf("Error launching instance: %v", err)
+		}
+		if inst == nil || len(inst.Instances) < 1 {
+			return fmt.Errorf("Error launching instance: %v", errors.New("Unexpected AWS API response"))
 		}
 		instance = inst.Instances[0]
 	}
@@ -945,6 +953,9 @@ func (d *Driver) getInstance() (*ec2.Instance, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if instances == nil || len(instances.Reservations) < 1 || len(instances.Reservations[0].Instances) < 1 {
+		return nil, fmt.Errorf("Error getting instance: %v", errors.New("Unexpected AWS API response"))
 	}
 	return instances.Reservations[0].Instances[0], nil
 }
