@@ -60,7 +60,7 @@ var (
 	errorNoSubnetsFound                  = errors.New("The desired subnet could not be located in this region. Is '--amazonec2-subnet-id' or AWS_SUBNET_ID configured correctly?")
 	errorDisableSSLWithoutCustomEndpoint = errors.New("using --amazonec2-insecure-transport also requires --amazonec2-endpoint")
 	errorReadingUserData                 = errors.New("unable to read --amazonec2-userdata file")
-	errorUnprocessableResponse           = errors.New("Unexpected AWS API response")
+	errorUnprocessableResponse           = errors.New("unexpected AWS API response")
 )
 
 type Driver struct {
@@ -669,7 +669,7 @@ func (d *Driver) innerCreate() error {
 			return fmt.Errorf("Error request spot instance: %v", err)
 		}
 		if spotInstanceRequest == nil || len((*spotInstanceRequest).SpotInstanceRequests) < 1 {
-			return fmt.Errorf("Error requesting spot instance: %v", errorUnprocessableResponse)
+			return fmt.Errorf("error requesting spot instance: %v", errorUnprocessableResponse)
 		}
 		d.spotInstanceRequestId = *spotInstanceRequest.SpotInstanceRequests[0].SpotInstanceRequestId
 
@@ -748,7 +748,7 @@ func (d *Driver) innerCreate() error {
 			return fmt.Errorf("Error launching instance: %v", err)
 		}
 		if inst == nil || len(inst.Instances) < 1 {
-			return fmt.Errorf("Error launching instance: %v", errorUnprocessableResponse)
+			return fmt.Errorf("error launching instance: %v", errorUnprocessableResponse)
 		}
 		instance = inst.Instances[0]
 	}
@@ -954,7 +954,7 @@ func (d *Driver) getInstance() (*ec2.Instance, error) {
 		return nil, err
 	}
 	if instances == nil || len(instances.Reservations) < 1 || len(instances.Reservations[0].Instances) < 1 {
-		return nil, fmt.Errorf("Error getting instance: %v", errorUnprocessableResponse)
+		return nil, fmt.Errorf("error getting instance: %v", errorUnprocessableResponse)
 	}
 	return instances.Reservations[0].Instances[0], nil
 }
