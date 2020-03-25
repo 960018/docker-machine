@@ -60,6 +60,7 @@ var (
 	errorNoSubnetsFound                  = errors.New("The desired subnet could not be located in this region. Is '--amazonec2-subnet-id' or AWS_SUBNET_ID configured correctly?")
 	errorDisableSSLWithoutCustomEndpoint = errors.New("using --amazonec2-insecure-transport also requires --amazonec2-endpoint")
 	errorReadingUserData                 = errors.New("unable to read --amazonec2-userdata file")
+	errorUnprocessableResponse           = errors.New("Unexpected AWS API response")
 )
 
 type Driver struct {
@@ -566,7 +567,6 @@ func migrateStringToSlice(value string, values []string) (result []string) {
 }
 
 func (d *Driver) securityGroupNames() (ids []string) {
-	fmt.Println("FOO: ", d.SecurityGroupName) //, d.SecurityGroupNames)
 	return migrateStringToSlice(d.SecurityGroupName, d.SecurityGroupNames)
 }
 
@@ -664,13 +664,12 @@ func (d *Driver) innerCreate() error {
 			req.BlockDurationMinutes = &d.BlockDurationMinutes
 		}
 
-		fmt.Println(req)
 		spotInstanceRequest, err := d.getClient().RequestSpotInstances(&req)
 		if err != nil {
 			return fmt.Errorf("Error request spot instance: %v", err)
 		}
 		if spotInstanceRequest == nil || len((*spotInstanceRequest).SpotInstanceRequests) < 1 {
-			return fmt.Errorf("Error requesting spot instance: %v", errors.New("Unexpected AWS API response"))
+			return fmt.Errorf("Error requesting spot instance: %v", errorUnprocessableResponse)
 		}
 		d.spotInstanceRequestId = *spotInstanceRequest.SpotInstanceRequests[0].SpotInstanceRequestId
 
@@ -749,7 +748,7 @@ func (d *Driver) innerCreate() error {
 			return fmt.Errorf("Error launching instance: %v", err)
 		}
 		if inst == nil || len(inst.Instances) < 1 {
-			return fmt.Errorf("Error launching instance: %v", errors.New("Unexpected AWS API response"))
+			return fmt.Errorf("Error launching instance: %v", errorUnprocessableResponse)
 		}
 		instance = inst.Instances[0]
 	}
@@ -955,7 +954,7 @@ func (d *Driver) getInstance() (*ec2.Instance, error) {
 		return nil, err
 	}
 	if instances == nil || len(instances.Reservations) < 1 || len(instances.Reservations[0].Instances) < 1 {
-		return nil, fmt.Errorf("Error getting instance: %v", errors.New("Unexpected AWS API response"))
+		return nil, fmt.Errorf("Error getting instance: %v", errorUnprocessableResponse)
 	}
 	return instances.Reservations[0].Instances[0], nil
 }
