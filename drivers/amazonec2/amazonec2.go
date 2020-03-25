@@ -956,6 +956,7 @@ func (d *Driver) getInstance() (*ec2.Instance, error) {
 	if instances == nil || len(instances.Reservations) < 1 || len(instances.Reservations[0].Instances) < 1 {
 		return nil, fmt.Errorf("error getting instance: %v", errorUnprocessableResponse)
 	}
+
 	return instances.Reservations[0].Instances[0], nil
 }
 
