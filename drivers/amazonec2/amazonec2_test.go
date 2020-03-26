@@ -39,7 +39,7 @@ func TestConfigureSecurityGroupPermissionsEmpty(t *testing.T) {
 	assert.Len(t, perms, 2)
 }
 
-func setupTestFailedSpotInstanceRequest(t *testing.T) (*Driver, func()) {
+func setupTestFailedSpotInstanceRequest(t *testing.T, r *ec2.RequestSpotInstancesOutput) (*Driver, func()) {
 	dir, _ := ioutil.TempDir("", "awsuserdata")
 	privKeyPath := filepath.Join(dir, "key")
 	pubKeyPath := filepath.Join(dir, "key.pub")
@@ -53,7 +53,7 @@ func setupTestFailedSpotInstanceRequest(t *testing.T) (*Driver, func()) {
 	driver := NewDriver("machineFoo", "path")
 	driver.clientFactory = func() Ec2Client {
 		return &fakeEC2SpotInstance{
-			output: nil,
+			output: r,
 			err:    nil,
 		}
 	}
@@ -72,11 +72,22 @@ func setupTestFailedSpotInstanceRequest(t *testing.T) (*Driver, func()) {
 }
 
 func TestFailedSpotInstanceRequest(t *testing.T) {
-	driver, cleanup := setupTestFailedSpotInstanceRequest(t)
-	defer cleanup()
+	var failureScenarios = []struct {
+		requestResult *ec2.RequestSpotInstancesOutput
+	}{
+		{nil},
+		{&ec2.RequestSpotInstancesOutput{
+			SpotInstanceRequests: []*ec2.SpotInstanceRequest{},
+		}},
+	}
 
-	err := driver.innerCreate()
-	assert.Error(t, err)
+	for _, tt := range failureScenarios {
+		driver, cleanup := setupTestFailedSpotInstanceRequest(t, tt.requestResult)
+		defer cleanup()
+
+		err := driver.innerCreate()
+		assert.Error(t, err)
+	}
 }
 
 func TestConfigureSecurityGroupPermissionsSshOnly(t *testing.T) {
