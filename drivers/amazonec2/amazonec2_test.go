@@ -75,6 +75,7 @@ func TestFailedSpotInstanceRequest(t *testing.T) {
 
 	err := driver.innerCreate()
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), errorUnprocessableResponse.Error())
 }
 
 func TestConfigureSecurityGroupPermissionsSshOnly(t *testing.T) {
