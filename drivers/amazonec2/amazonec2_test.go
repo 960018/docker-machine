@@ -39,6 +39,45 @@ func TestConfigureSecurityGroupPermissionsEmpty(t *testing.T) {
 	assert.Len(t, perms, 2)
 }
 
+func setupTestFailedSpotInstanceRequest() (*Driver, func()) {
+	dir, _ := ioutil.TempDir("", "awsuserdata")
+	privKeyPath := filepath.Join(dir, "key")
+	pubKeyPath := filepath.Join(dir, "key.pub")
+
+	content := []byte("test\n")
+	_ = ioutil.WriteFile(privKeyPath, content, 0666)
+	_ = ioutil.WriteFile(pubKeyPath, content, 0666)
+
+	driver := NewDriver("machineFoo", "path")
+	driver.clientFactory = func() Ec2Client {
+		return &fakeEC2SpotInstance{
+			output: nil,
+			err:    nil,
+		}
+	}
+
+	driver.SecurityGroupNames = []string{}
+
+	driver.SSHPrivateKeyPath = privKeyPath
+	driver.SSHKeyPath = pubKeyPath
+	driver.KeyName = "foo"
+
+	driver.RequestSpotInstance = true
+
+	return driver, func() {
+		os.RemoveAll(dir)
+	}
+}
+
+func TestFailedSpotInstanceRequest(t *testing.T) {
+	driver, cleanup := setupTestFailedSpotInstanceRequest()
+	defer cleanup()
+
+	err := driver.innerCreate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), errorUnprocessableResponse.Error())
+}
+
 func TestConfigureSecurityGroupPermissionsSshOnly(t *testing.T) {
 	driver := NewTestDriver()
 	group := securityGroup
