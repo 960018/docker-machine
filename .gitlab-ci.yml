@@ -10,6 +10,10 @@ variables:
   USE_CONTAINER: "true"
   CI_IMAGE: registry.gitlab.com/gitlab-org/ci-cd/docker-machine/ci:alpine3.10
 
+default:
+  tags:
+  - gitlab-org
+
 .docker_in_docker:
   services:
   - docker:19.03.2-dind
