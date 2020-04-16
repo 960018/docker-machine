@@ -704,9 +704,9 @@ func (d *Driver) innerCreate() error {
 				// Unexpected; no need to retry
 				return fmt.Errorf("Error describing previously made spot instance request: %v", err)
 			}
-			// if resolvedSpotInstance == nil || len((*resolvedSpotInstance).SpotInstanceRequests) < 1 {
-			// 	return fmt.Errorf("Error describing spot instance: %v", errorUnprocessableResponse)
-			// }
+			if resolvedSpotInstance == nil || len((*resolvedSpotInstance).SpotInstanceRequests) < 1 {
+				return fmt.Errorf("Error describing spot instance: %v", errorUnprocessableResponse)
+			}
 
 			maybeInstanceId := resolvedSpotInstance.SpotInstanceRequests[0].InstanceId
 			if maybeInstanceId != nil {
