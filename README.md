@@ -5,7 +5,6 @@ fixes affecting running costs only.
 
 Builds from this fork can be downloaded at https://gitlab-docker-machine-downloads.s3.amazonaws.com/master/index.html
 
-
 # Docker Machine
 
 ![](https://docs.docker.com/machine/img/logo.png)
