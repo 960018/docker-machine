@@ -1,7 +1,7 @@
 extension = $(patsubst windows,.exe,$(filter windows,$(1)))
 
 # Valid target combinations
-VALID_OS_ARCH := "[darwin/amd64][linux/amd64][linux/arm][linux/arm64][openbsd/amd64][windows/amd64][windows/386]"
+VALID_OS_ARCH := "[darwin/amd64][linux/amd64][linux/arm][linux/arm64][linux/s390x][openbsd/amd64][windows/amd64][windows/386]"
 
 os.darwin := Darwin
 os.linux := Linux
@@ -11,6 +11,7 @@ os.windows := Windows
 arch.amd64 := x86_64
 arch.arm := armhf
 arch.arm64 := aarch64
+arch.s390x := s390x
 arch.386 := i386
 
 define gocross

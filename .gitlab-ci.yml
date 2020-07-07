@@ -80,6 +80,7 @@ default:
   - linux amd64
   - linux arm
   - linux arm64
+  - linux s390x
   - windows amd64
   - darwin amd64
   variables:
@@ -110,6 +111,7 @@ openbsd amd64: *build_x
 windows amd64: *build_x
 linux arm: *build_x
 linux arm64: *build_x
+linux s390x: *build_x
 
 release development S3:
   extends:
