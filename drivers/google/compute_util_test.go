@@ -27,6 +27,24 @@ func TestAdditionalTags(t *testing.T) {
 	assert.Equal(t, []string{"docker-machine", "tag1", "tag2"}, tags)
 }
 
+func TestDefaultLabel(t *testing.T) {
+	labels := parseLabels(&Driver{Labels: []string{}})
+
+	assert.Equal(t, map[string]string{}, labels)
+}
+
+func TestAdditionalLabel(t *testing.T) {
+	labels := parseLabels(&Driver{Labels: []string{"key1:value1"}})
+
+	assert.Equal(t, map[string]string{"key1": "value1"}, labels)
+}
+
+func TestAdditionalLabels(t *testing.T) {
+	labels := parseLabels(&Driver{Labels: []string{"key1: value1", "key2: value2"}})
+
+	assert.Equal(t, map[string]string{"key1": "value1", "key2": "value2"}, labels)
+}
+
 func TestPortsUsed(t *testing.T) {
 	var tests = []struct {
 		description   string
