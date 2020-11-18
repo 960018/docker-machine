@@ -253,6 +253,11 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 		net = c.globalURL + "/networks/" + d.Network
 	}
 
+	userData, err := getUserData(d)
+	if err != nil {
+		return err
+	}
+
 	instance := &raw.Instance{
 		Name:           c.instanceName,
 		Description:    "docker host vm",
@@ -284,6 +289,14 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 			Preemptible: c.preemptible,
 		},
 		Labels: parseLabels(d),
+		Metadata: &raw.Metadata{
+			Items: []*raw.MetadataItems{
+				{
+					Key:   "user-data",
+					Value: &userData,
+				},
+			},
+		},
 	}
 
 	if strings.Contains(c.subnetwork, "/subnetworks/") {
@@ -320,8 +333,8 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 	} else {
 		instance.Disks[0].Source = c.zoneURL + "/disks/" + c.instanceName + "-disk"
 	}
-	op, err := c.service.Instances.Insert(c.project, c.zone, instance).Do()
 
+	op, err := c.service.Instances.Insert(c.project, c.zone, instance).Do()
 	if err != nil {
 		return err
 	}
@@ -398,6 +411,20 @@ func (c *ComputeUtil) uploadSSHKey(instance *raw.Instance, sshKeyPath string) er
 	}).Do()
 
 	return c.waitForRegionalOp(op.Name)
+}
+
+// getUserData reads the data from the provided file path
+func getUserData(d *Driver) (string, error) {
+	if d.UserDataFile == "" {
+		return "", nil
+	}
+
+	data, err := ioutil.ReadFile(d.UserDataFile)
+	if err != nil {
+		return "", err
+	}
+
+	return string(data), nil
 }
 
 // parseTags computes the tags for the instance.

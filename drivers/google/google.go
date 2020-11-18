@@ -57,6 +57,7 @@ type Driver struct {
 	UseExisting       bool
 	OpenPorts         []string
 	Labels            []string
+	UserDataFile      string
 
 	OperationBackoffFactory *backoffFactory
 }
@@ -220,6 +221,10 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Name:  "google-label",
 			Usage: "Label to set on the VM (format: key:value). Repeat the flag to set more labels",
 		},
+		mcnflag.StringFlag{
+			Name:  "google-user-data-file",
+			Usage: "Path to a file containing the cloud-config user data",
+		},
 	}
 }
 
@@ -289,6 +294,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		d.Tags = flags.String("google-tags")
 		d.OpenPorts = flags.StringSlice("google-open-port")
 		d.Labels = flags.StringSlice("google-label")
+		d.UserDataFile = flags.String("google-user-data-file")
 	}
 	d.SSHUser = flags.String("google-username")
 	d.SSHPort = 22

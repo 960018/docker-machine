@@ -2,6 +2,9 @@ package google
 
 import (
 	"errors"
+	"fmt"
+	"io/ioutil"
+	"os"
 	"testing"
 	"time"
 
@@ -226,6 +229,77 @@ func TestWaitForOpBackOff(t *testing.T) {
 			}
 
 			assert.True(t, toc.calls < 8, "Too many *OperationServices.Get() calls")
+		})
+	}
+}
+
+func TestGetUserData(t *testing.T) {
+	fileContent := "file content"
+
+	tests := map[string]struct {
+		prepareFile      func(t *testing.T) (string, func())
+		expectedError    bool
+		expectedUserData string
+	}{
+		"user-data-file option not provided": {
+			prepareFile: func(t *testing.T) (string, func()) {
+				return "", func() {}
+			},
+			expectedError:    false,
+			expectedUserData: "",
+		},
+		"error on reading user data file": {
+			prepareFile: func(t *testing.T) (string, func()) {
+				return "non-existing", func() {}
+			},
+			expectedError: true,
+		},
+		"user data file properly read": {
+			prepareFile: func(t *testing.T) (string, func()) {
+				file, err := ioutil.TempFile("", "user-data-test")
+				if !assert.NoError(t, err) {
+					t.FailNow()
+				}
+
+				defer file.Close()
+
+				_, err = fmt.Fprint(file, fileContent)
+				if !assert.NoError(t, err) {
+					t.FailNow()
+				}
+
+				cleanup := func() {
+					err := os.RemoveAll(file.Name())
+					if !assert.NoError(t, err) {
+						t.FailNow()
+					}
+				}
+
+				return file.Name(), cleanup
+			},
+			expectedError:    false,
+			expectedUserData: fileContent,
+		},
+	}
+
+	for tn, tt := range tests {
+		t.Run(tn, func(t *testing.T) {
+			userDataFile, cleanup := tt.prepareFile(t)
+			defer cleanup()
+
+			d := &Driver{
+				UserDataFile: userDataFile,
+			}
+
+			data, err := getUserData(d)
+
+			if tt.expectedError != false {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedUserData, data)
 		})
 	}
 }
