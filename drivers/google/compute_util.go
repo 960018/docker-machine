@@ -50,6 +50,8 @@ const (
 	firewallRule      = "docker-machines"
 	dockerPort        = "2376"
 	firewallTargetTag = "docker-machine"
+
+	userDataMetadataKey = "user-data"
 )
 
 // NewComputeUtil creates and initializes a ComputeUtil.
@@ -253,7 +255,7 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 		net = c.globalURL + "/networks/" + d.Network
 	}
 
-	userData, err := getUserData(d)
+	metadata, err := getMetadata(d)
 	if err != nil {
 		return err
 	}
@@ -288,15 +290,8 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 		Scheduling: &raw.Scheduling{
 			Preemptible: c.preemptible,
 		},
-		Labels: parseLabels(d),
-		Metadata: &raw.Metadata{
-			Items: []*raw.MetadataItems{
-				{
-					Key:   "user-data",
-					Value: &userData,
-				},
-			},
-		},
+		Labels:   parseLabels(d),
+		Metadata: metadata,
 	}
 
 	if strings.Contains(c.subnetwork, "/subnetworks/") {
@@ -413,18 +408,54 @@ func (c *ComputeUtil) uploadSSHKey(instance *raw.Instance, sshKeyPath string) er
 	return c.waitForRegionalOp(op.Name)
 }
 
+// getMetadata returns instance metadata
+func getMetadata(d *Driver) (*raw.Metadata, error) {
+	userData, err := getUserData(d)
+	if err != nil {
+		return nil, err
+	}
+
+	return prepareMetadata(d.Metadata, userData), nil
+}
+
+// prepareMetadata prepares instance metadata entries from provided configuration
+func prepareMetadata(values metadataMap, userData *raw.MetadataItems) *raw.Metadata {
+	metadata := &raw.Metadata{
+		Items: make([]*raw.MetadataItems, 0),
+	}
+
+	if userData != nil {
+		metadata.Items = append(metadata.Items, userData)
+	}
+
+	for key, value := range values {
+		metadata.Items = append(metadata.Items, &raw.MetadataItems{
+			Key:   key,
+			Value: &value,
+		})
+	}
+
+	return metadata
+}
+
 // getUserData reads the data from the provided file path
-func getUserData(d *Driver) (string, error) {
+func getUserData(d *Driver) (*raw.MetadataItems, error) {
 	if d.UserDataFile == "" {
-		return "", nil
+		return nil, nil
 	}
 
 	data, err := ioutil.ReadFile(d.UserDataFile)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return string(data), nil
+	userData := string(data)
+	metadata := &raw.MetadataItems{
+		Key:   userDataMetadataKey,
+		Value: &userData,
+	}
+
+	return metadata, nil
 }
 
 // parseTags computes the tags for the instance.

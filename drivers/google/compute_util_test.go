@@ -233,26 +233,101 @@ func TestWaitForOpBackOff(t *testing.T) {
 	}
 }
 
+func TestPrepareMetadata(t *testing.T) {
+	cloudConfig := "user-data"
+	userData := &raw.MetadataItems{Key: userDataMetadataKey, Value: &cloudConfig}
+	metadataKey1 := "key_1"
+	metadataValue1 := "value_1"
+	metadata := metadataMap{metadataKey1: metadataValue1}
+
+	assertMetadata := func(t *testing.T, m *raw.Metadata, key string, value string) {
+		if !assert.NotNil(t, m) {
+			t.FailNow()
+		}
+		found := false
+		for _, item := range m.Items {
+			if item.Key != key {
+				continue
+			}
+
+			found = true
+
+			if !assert.NotNil(t, item.Value) {
+				t.FailNow()
+			}
+			assert.Equal(t, value, *item.Value)
+		}
+		assert.True(t, found, "not found the metadata item %q=%q", key, value)
+	}
+
+	tests := map[string]struct {
+		metadata       metadataMap
+		userData       *raw.MetadataItems
+		assertMetadata func(t *testing.T, m *raw.Metadata)
+	}{
+		"no configuration provided": {
+			metadata: nil,
+			userData: nil,
+			assertMetadata: func(t *testing.T, m *raw.Metadata) {
+				if !assert.NotNil(t, m) {
+					t.FailNow()
+				}
+				assert.Empty(t, m.Items)
+			},
+		},
+		"userData present": {
+			metadata: nil,
+			userData: userData,
+			assertMetadata: func(t *testing.T, m *raw.Metadata) {
+				assertMetadata(t, m, userDataMetadataKey, cloudConfig)
+			},
+		},
+		"userData not present": {
+			metadata: metadata,
+			userData: nil,
+			assertMetadata: func(t *testing.T, m *raw.Metadata) {
+				assertMetadata(t, m, metadataKey1, metadataValue1)
+			},
+		},
+		"both present": {
+			metadata: metadata,
+			userData: userData,
+			assertMetadata: func(t *testing.T, m *raw.Metadata) {
+				assertMetadata(t, m, metadataKey1, metadataValue1)
+			},
+		},
+	}
+
+	for tn, tt := range tests {
+		t.Run(tn, func(t *testing.T) {
+			tt.assertMetadata(t, prepareMetadata(tt.metadata, tt.userData))
+		})
+	}
+}
+
 func TestGetUserData(t *testing.T) {
 	fileContent := "file content"
 
 	tests := map[string]struct {
-		prepareFile      func(t *testing.T) (string, func())
-		expectedError    bool
-		expectedUserData string
+		prepareFile    func(t *testing.T) (string, func())
+		expectedError  bool
+		assertUserData func(t *testing.T, m *raw.MetadataItems)
 	}{
 		"user-data-file option not provided": {
-			prepareFile: func(t *testing.T) (string, func()) {
+			prepareFile: func(_ *testing.T) (string, func()) {
 				return "", func() {}
 			},
-			expectedError:    false,
-			expectedUserData: "",
+			expectedError: false,
+			assertUserData: func(t *testing.T, m *raw.MetadataItems) {
+				assert.Nil(t, m)
+			},
 		},
 		"error on reading user data file": {
-			prepareFile: func(t *testing.T) (string, func()) {
+			prepareFile: func(_ *testing.T) (string, func()) {
 				return "non-existing", func() {}
 			},
-			expectedError: true,
+			expectedError:  true,
+			assertUserData: func(t *testing.T, m *raw.MetadataItems) {},
 		},
 		"user data file properly read": {
 			prepareFile: func(t *testing.T) (string, func()) {
@@ -277,8 +352,14 @@ func TestGetUserData(t *testing.T) {
 
 				return file.Name(), cleanup
 			},
-			expectedError:    false,
-			expectedUserData: fileContent,
+			expectedError: false,
+			assertUserData: func(t *testing.T, m *raw.MetadataItems) {
+				assert.Equal(t, m.Key, "user-data")
+				if !assert.NotNil(t, m.Value) {
+					t.FailNow()
+				}
+				assert.Equal(t, *m.Value, fileContent)
+			},
 		},
 	}
 
@@ -299,7 +380,7 @@ func TestGetUserData(t *testing.T) {
 			}
 
 			assert.NoError(t, err)
-			assert.Equal(t, tt.expectedUserData, data)
+			tt.assertUserData(t, data)
 		})
 	}
 }
