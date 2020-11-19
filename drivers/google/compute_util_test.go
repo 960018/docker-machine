@@ -2,6 +2,9 @@ package google
 
 import (
 	"errors"
+	"fmt"
+	"io/ioutil"
+	"os"
 	"testing"
 	"time"
 
@@ -230,60 +233,137 @@ func TestWaitForOpBackOff(t *testing.T) {
 	}
 }
 
-func TestPrepareMetadata_NoConfiguration(t *testing.T) {
-	m := prepareMetadata(nil)
-	if !assert.NotNil(t, m) {
-		t.FailNow()
-	}
-	assert.Empty(t, m.Items)
-}
-
-func TestPrepareMetadata_WithConfiguration(t *testing.T) {
+func TestGetMetadata(t *testing.T) {
 	metadataKey1 := "key_1"
 	metadataValue1 := "value_1"
 	metadataKey2 := "key_2"
 	metadataValue2 := "value_2"
-	metadata := metadataMap{
-		metadataKey1: metadataValue1,
-		metadataKey2: metadataValue2,
-	}
+	fileContent := "file-content"
 
-	assertMetadata := func(t *testing.T, m *raw.Metadata, key string, value string) {
+	failingUserDataFile := func(_ *testing.T) (string, func()) {
+		return "non-existing", func() {}
+	}
+	noUserDataFile := func(_ *testing.T) (string, func()) { return "", func() {} }
+	emptyMetadata := func(t *testing.T, m *raw.Metadata) {
 		if !assert.NotNil(t, m) {
 			t.FailNow()
 		}
-		found := false
-		for _, item := range m.Items {
-			if item.Key != key {
-				continue
-			}
-
-			found = true
-
-			if !assert.NotNil(t, item.Value) {
-				t.FailNow()
-			}
-			assert.Equal(t, value, *item.Value)
-		}
-		assert.True(t, found, "not found the metadata item %q=%q", key, value)
+		assert.Empty(t, m.Items)
 	}
 
 	tests := map[string]struct {
 		metadata       metadataMap
+		userDataFile   func(t *testing.T) (string, func())
+		expectedError  bool
 		assertMetadata func(t *testing.T, m *raw.Metadata)
 	}{
-		"metadata provided": {
-			metadata: metadata,
+		"error on user-data preparation": {
+			userDataFile:   failingUserDataFile,
+			expectedError:  true,
+			assertMetadata: emptyMetadata,
+		},
+		"only metadata passed": {
+			metadata: metadataMap{
+				metadataKey1: metadataValue1,
+				metadataKey2: metadataValue2,
+			},
+			userDataFile:  noUserDataFile,
+			expectedError: false,
 			assertMetadata: func(t *testing.T, m *raw.Metadata) {
 				assertMetadata(t, m, metadataKey1, metadataValue1)
 				assertMetadata(t, m, metadataKey2, metadataValue2)
 			},
 		},
+		"only user-data passed": {
+			userDataFile:  prepareUserDataFile(fileContent),
+			expectedError: false,
+			assertMetadata: func(t *testing.T, m *raw.Metadata) {
+				assertMetadata(t, m, userDataMetadataKey, fileContent)
+			},
+		},
+		"both passed": {
+			metadata: metadataMap{
+				metadataKey1: metadataValue1,
+				metadataKey2: metadataValue2,
+			},
+			userDataFile:  prepareUserDataFile(fileContent),
+			expectedError: false,
+			assertMetadata: func(t *testing.T, m *raw.Metadata) {
+				assertMetadata(t, m, metadataKey1, metadataValue1)
+				assertMetadata(t, m, metadataKey2, metadataValue2)
+				assertMetadata(t, m, userDataMetadataKey, fileContent)
+			},
+		},
+		"no metadata configuration": {
+			metadata:       nil,
+			userDataFile:   noUserDataFile,
+			expectedError:  false,
+			assertMetadata: emptyMetadata,
+		},
 	}
 
 	for tn, tt := range tests {
 		t.Run(tn, func(t *testing.T) {
-			tt.assertMetadata(t, prepareMetadata(tt.metadata))
+			userDataFile, cleanup := tt.userDataFile(t)
+			defer cleanup()
+
+			metadata, err := getMetadata(&Driver{
+				Metadata:     tt.metadata,
+				UserDataFile: userDataFile,
+			})
+
+			if tt.expectedError {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			tt.assertMetadata(t, metadata)
 		})
+	}
+}
+
+func assertMetadata(t *testing.T, m *raw.Metadata, key string, value string) {
+	if !assert.NotNil(t, m) {
+		t.FailNow()
+	}
+	found := false
+	for _, item := range m.Items {
+		if item.Key != key {
+			continue
+		}
+
+		found = true
+
+		if !assert.NotNil(t, item.Value) {
+			t.FailNow()
+		}
+		assert.Equal(t, value, *item.Value)
+	}
+	assert.True(t, found, "not found the metadata item %q=%q", key, value)
+}
+
+func prepareUserDataFile(fileContent string) func(t *testing.T) (string, func()) {
+	return func(t *testing.T) (string, func()) {
+		file, err := ioutil.TempFile("", "user-data-test")
+		if !assert.NoError(t, err) {
+			t.FailNow()
+		}
+
+		defer file.Close()
+
+		_, err = fmt.Fprint(file, fileContent)
+		if !assert.NoError(t, err) {
+			t.FailNow()
+		}
+
+		cleanup := func() {
+			err := os.RemoveAll(file.Name())
+			if !assert.NoError(t, err) {
+				t.FailNow()
+			}
+		}
+
+		return file.Name(), cleanup
 	}
 }

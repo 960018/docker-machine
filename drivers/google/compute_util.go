@@ -50,6 +50,8 @@ const (
 	firewallRule      = "docker-machines"
 	dockerPort        = "2376"
 	firewallTargetTag = "docker-machine"
+
+	userDataMetadataKey = "user-data"
 )
 
 // NewComputeUtil creates and initializes a ComputeUtil.
@@ -253,6 +255,11 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 		net = c.globalURL + "/networks/" + d.Network
 	}
 
+	metadata, err := getMetadata(d)
+	if err != nil {
+		return err
+	}
+
 	instance := &raw.Instance{
 		Name:           c.instanceName,
 		Description:    "docker host vm",
@@ -284,7 +291,7 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 			Preemptible: c.preemptible,
 		},
 		Labels:   parseLabels(d),
-		Metadata: prepareMetadata(d.Metadata),
+		Metadata: metadata,
 	}
 
 	if strings.Contains(c.subnetwork, "/subnetworks/") {
@@ -402,6 +409,18 @@ func (c *ComputeUtil) uploadSSHKey(instance *raw.Instance, sshKeyPath string) er
 	return c.waitForRegionalOp(op.Name)
 }
 
+// getMetadata returns instance metadata
+func getMetadata(d *Driver) (*raw.Metadata, error) {
+	metadata := prepareMetadata(d.Metadata)
+
+	err := appendUserData(metadata, d.UserDataFile)
+	if err != nil {
+		return nil, err
+	}
+
+	return metadata, err
+}
+
 // prepareMetadata prepares instance metadata entries from provided configuration
 func prepareMetadata(values metadataMap) *raw.Metadata {
 	metadata := &raw.Metadata{
@@ -418,6 +437,26 @@ func prepareMetadata(values metadataMap) *raw.Metadata {
 	}
 
 	return metadata
+}
+
+// appendUserData reads the data from the provided file path and appends to metadata.Items slice
+func appendUserData(metadata *raw.Metadata, userDataFile string) error {
+	if userDataFile == "" {
+		return nil
+	}
+
+	data, err := ioutil.ReadFile(userDataFile)
+	if err != nil {
+		return err
+	}
+
+	userData := string(data)
+	metadata.Items = append(metadata.Items, &raw.MetadataItems{
+		Key:   userDataMetadataKey,
+		Value: &userData,
+	})
+
+	return nil
 }
 
 // parseTags computes the tags for the instance.
