@@ -283,7 +283,8 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 		Scheduling: &raw.Scheduling{
 			Preemptible: c.preemptible,
 		},
-		Labels: parseLabels(d),
+		Labels:   parseLabels(d),
+		Metadata: prepareMetadata(d.Metadata),
 	}
 
 	if strings.Contains(c.subnetwork, "/subnetworks/") {
@@ -398,6 +399,22 @@ func (c *ComputeUtil) uploadSSHKey(instance *raw.Instance, sshKeyPath string) er
 	}).Do()
 
 	return c.waitForRegionalOp(op.Name)
+}
+
+// prepareMetadata prepares instance metadata entries from provided configuration
+func prepareMetadata(values metadataMap) *raw.Metadata {
+	metadata := &raw.Metadata{
+		Items: make([]*raw.MetadataItems, 0),
+	}
+
+	for key, value := range values {
+		metadata.Items = append(metadata.Items, &raw.MetadataItems{
+			Key:   key,
+			Value: &value,
+		})
+	}
+
+	return metadata
 }
 
 // parseTags computes the tags for the instance.
