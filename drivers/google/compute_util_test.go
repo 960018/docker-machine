@@ -2,6 +2,9 @@ package google
 
 import (
 	"errors"
+	"fmt"
+	"io/ioutil"
+	"os"
 	"testing"
 	"time"
 
@@ -226,6 +229,158 @@ func TestWaitForOpBackOff(t *testing.T) {
 			}
 
 			assert.True(t, toc.calls < 8, "Too many *OperationServices.Get() calls")
+		})
+	}
+}
+
+func TestPrepareMetadata(t *testing.T) {
+	cloudConfig := "user-data"
+	userData := &raw.MetadataItems{Key: userDataMetadataKey, Value: &cloudConfig}
+	metadataKey1 := "key_1"
+	metadataValue1 := "value_1"
+	metadata := metadataMap{metadataKey1: metadataValue1}
+
+	assertMetadata := func(t *testing.T, m *raw.Metadata, key string, value string) {
+		if !assert.NotNil(t, m) {
+			t.FailNow()
+		}
+		found := false
+		for _, item := range m.Items {
+			if item.Key != key {
+				continue
+			}
+
+			found = true
+
+			if !assert.NotNil(t, item.Value) {
+				t.FailNow()
+			}
+			assert.Equal(t, value, *item.Value)
+		}
+		assert.True(t, found, "not found the metadata item %q=%q", key, value)
+	}
+
+	tests := map[string]struct {
+		metadata       metadataMap
+		userData       *raw.MetadataItems
+		assertMetadata func(t *testing.T, m *raw.Metadata)
+	}{
+		"no configuration provided": {
+			metadata: nil,
+			userData: nil,
+			assertMetadata: func(t *testing.T, m *raw.Metadata) {
+				if !assert.NotNil(t, m) {
+					t.FailNow()
+				}
+				assert.Empty(t, m.Items)
+			},
+		},
+		"userData present": {
+			metadata: nil,
+			userData: userData,
+			assertMetadata: func(t *testing.T, m *raw.Metadata) {
+				assertMetadata(t, m, userDataMetadataKey, cloudConfig)
+			},
+		},
+		"userData not present": {
+			metadata: metadata,
+			userData: nil,
+			assertMetadata: func(t *testing.T, m *raw.Metadata) {
+				assertMetadata(t, m, metadataKey1, metadataValue1)
+			},
+		},
+		"both present": {
+			metadata: metadata,
+			userData: userData,
+			assertMetadata: func(t *testing.T, m *raw.Metadata) {
+				assertMetadata(t, m, metadataKey1, metadataValue1)
+			},
+		},
+	}
+
+	for tn, tt := range tests {
+		t.Run(tn, func(t *testing.T) {
+			tt.assertMetadata(t, prepareMetadata(tt.metadata, tt.userData))
+		})
+	}
+}
+
+func TestGetUserData(t *testing.T) {
+	fileContent := "file content"
+
+	tests := map[string]struct {
+		prepareFile    func(t *testing.T) (string, func())
+		expectedError  bool
+		assertUserData func(t *testing.T, m *raw.MetadataItems)
+	}{
+		"user-data-file option not provided": {
+			prepareFile: func(_ *testing.T) (string, func()) {
+				return "", func() {}
+			},
+			expectedError: false,
+			assertUserData: func(t *testing.T, m *raw.MetadataItems) {
+				assert.Nil(t, m)
+			},
+		},
+		"error on reading user data file": {
+			prepareFile: func(_ *testing.T) (string, func()) {
+				return "non-existing", func() {}
+			},
+			expectedError:  true,
+			assertUserData: func(t *testing.T, m *raw.MetadataItems) {},
+		},
+		"user data file properly read": {
+			prepareFile: func(t *testing.T) (string, func()) {
+				file, err := ioutil.TempFile("", "user-data-test")
+				if !assert.NoError(t, err) {
+					t.FailNow()
+				}
+
+				defer file.Close()
+
+				_, err = fmt.Fprint(file, fileContent)
+				if !assert.NoError(t, err) {
+					t.FailNow()
+				}
+
+				cleanup := func() {
+					err := os.RemoveAll(file.Name())
+					if !assert.NoError(t, err) {
+						t.FailNow()
+					}
+				}
+
+				return file.Name(), cleanup
+			},
+			expectedError: false,
+			assertUserData: func(t *testing.T, m *raw.MetadataItems) {
+				assert.Equal(t, m.Key, "user-data")
+				if !assert.NotNil(t, m.Value) {
+					t.FailNow()
+				}
+				assert.Equal(t, *m.Value, fileContent)
+			},
+		},
+	}
+
+	for tn, tt := range tests {
+		t.Run(tn, func(t *testing.T) {
+			userDataFile, cleanup := tt.prepareFile(t)
+			defer cleanup()
+
+			d := &Driver{
+				UserDataFile: userDataFile,
+			}
+
+			data, err := getUserData(d)
+
+			if tt.expectedError != false {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			tt.assertUserData(t, data)
 		})
 	}
 }
