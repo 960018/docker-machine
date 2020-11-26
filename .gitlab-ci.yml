@@ -46,7 +46,7 @@ default:
     - bin/
     expire_in: 1 week
 
-.build_validate: &build_validate
+build_validate:
   <<: *build_base
   stage: validate
   script: make build validate
@@ -105,7 +105,7 @@ prepare CI image:
     - .gitlab-ci.yml
 
 darwin amd64: *build_x
-linux amd64: *build_validate
+linux amd64: *build_x
 openbsd amd64: *build_x
 windows amd64: *build_x
 linux arm: *build_x
