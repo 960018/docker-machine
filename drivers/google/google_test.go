@@ -22,3 +22,38 @@ func TestSetConfigFromFlags(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Empty(t, checkFlags.InvalidFlags)
 }
+
+func TestMetadataMapFromStringSlice(t *testing.T) {
+	tests := map[string]struct {
+		slice          []string
+		expectedResult metadataMap
+	}{
+		"empty slice": {
+			slice:          []string{""},
+			expectedResult: metadataMap{},
+		},
+		"missing key=value pair": {
+			slice:          []string{"key_1"},
+			expectedResult: metadataMap{},
+		},
+		"key=value pair present": {
+			slice:          []string{"key_1=value_1"},
+			expectedResult: metadataMap{"key_1": "value_1"},
+		},
+		"multiple = characters present": {
+			slice:          []string{"key_1=value=_1="},
+			expectedResult: metadataMap{"key_1": "value=_1="},
+		},
+		"invalid key value pair": {
+			slice:          []string{"key_1="},
+			expectedResult: metadataMap{"key_1": ""},
+		},
+	}
+
+	for tn, tt := range tests {
+		t.Run(tn, func(t *testing.T) {
+			result := metadataMapFromStringSlice(tt.slice)
+			assert.Equal(t, tt.expectedResult, result)
+		})
+	}
+}
