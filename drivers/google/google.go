@@ -59,6 +59,7 @@ type Driver struct {
 	UseExisting       bool
 	OpenPorts         []string
 	Labels            []string
+	UserDataFile      string
 	Metadata          metadataMap
 
 	OperationBackoffFactory *backoffFactory
@@ -227,6 +228,10 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Name:  "google-metadata",
 			Usage: "Custom metadata value passed in key=value form. Use multiple times for multiple settings",
 		},
+		mcnflag.StringFlag{
+			Name:  "google-user-data-file",
+			Usage: "Path to a file containing the cloud-config user data",
+		},
 	}
 }
 
@@ -297,6 +302,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		d.OpenPorts = flags.StringSlice("google-open-port")
 		d.Labels = flags.StringSlice("google-label")
 		d.Metadata = metadataMapFromStringSlice(flags.StringSlice("google-metadata"))
+		d.UserDataFile = flags.String("google-user-data-file")
 	}
 	d.SSHUser = flags.String("google-username")
 	d.SSHPort = 22
