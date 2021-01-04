@@ -41,6 +41,8 @@ type ComputeUtil struct {
 	SwarmHost         string
 	openPorts         []string
 	minCPUPlatform    string
+	acceleratorCount  int
+	acceleratorType   string
 
 	operationBackoffFactory *backoffFactory
 }
@@ -84,6 +86,8 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		openPorts:               driver.OpenPorts,
 		operationBackoffFactory: driver.OperationBackoffFactory,
 		minCPUPlatform:          driver.MinCPUPlatform,
+		acceleratorCount:        driver.AcceleratorCount,
+		acceleratorType:         driver.AcceleratorType,
 	}, nil
 }
 
