@@ -41,6 +41,9 @@ type ComputeUtil struct {
 	SwarmHost         string
 	openPorts         []string
 	minCPUPlatform    string
+	acceleratorCount  int
+	acceleratorType   string
+	maintenancePolicy string
 
 	operationBackoffFactory *backoffFactory
 }
@@ -84,6 +87,9 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		openPorts:               driver.OpenPorts,
 		operationBackoffFactory: driver.OperationBackoffFactory,
 		minCPUPlatform:          driver.MinCPUPlatform,
+		acceleratorCount:        driver.AcceleratorCount,
+		acceleratorType:         driver.AcceleratorType,
+		maintenancePolicy:       driver.MaintenancePolicy,
 	}, nil
 }
 
@@ -290,6 +296,19 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 		},
 		Labels:   parseLabels(d),
 		Metadata: metadata,
+	}
+
+	if c.maintenancePolicy != "" {
+		instance.Scheduling.OnHostMaintenance = d.MaintenancePolicy
+	}
+
+	if c.acceleratorCount > 0 && len(c.acceleratorType) > 0 {
+		instance.GuestAccelerators = []*raw.AcceleratorConfig{
+			{
+				AcceleratorCount: int64(d.AcceleratorCount),
+				AcceleratorType:  "https://www.googleapis.com/compute/v1/projects/" + c.project + "/zones/" + d.Zone + "/acceleratorTypes/" + d.AcceleratorType,
+			},
+		}
 	}
 
 	if strings.Contains(c.subnetwork, "/subnetworks/") {
