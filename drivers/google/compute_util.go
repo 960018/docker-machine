@@ -292,6 +292,15 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 		Metadata: metadata,
 	}
 
+	if d.AcceleratorCount > 0 && len(d.AcceleratorType) > 0 {
+		instance.GuestAccelerators = []*raw.AcceleratorConfig{
+			{
+				AcceleratorCount: int64(d.AcceleratorCount),
+				AcceleratorType:  "https://www.googleapis.com/compute/beta/projects/" + c.project + "/zones/" + d.Zone + "/acceleratorTypes/" + d.AcceleratorType,
+			},
+		}
+	}
+
 	if strings.Contains(c.subnetwork, "/subnetworks/") {
 		instance.NetworkInterfaces[0].Subnetwork = c.subnetwork
 	} else if c.subnetwork != "" {
