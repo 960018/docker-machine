@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,8 @@ type ComputeUtil struct {
 	SwarmHost         string
 	openPorts         []string
 	minCPUPlatform    string
+	accelerator       string
+	maintenancePolicy string
 
 	operationBackoffFactory *backoffFactory
 }
@@ -84,7 +87,31 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		openPorts:               driver.OpenPorts,
 		operationBackoffFactory: driver.OperationBackoffFactory,
 		minCPUPlatform:          driver.MinCPUPlatform,
+		accelerator:             driver.Accelerator,
+		maintenancePolicy:       driver.MaintenancePolicy,
 	}, nil
+}
+
+func (c *ComputeUtil) acceleratorCountAndType() (int, string) {
+	if c.accelerator == "" {
+		return 0, ""
+	}
+
+	s := strings.Split(strings.TrimSpace(c.accelerator), ",")
+
+	switch len(s) {
+	case 1:
+		return 1, s[0]
+	case 2:
+		count, err := strconv.Atoi(s[0])
+		if err != nil {
+			return 0, ""
+		}
+
+		return count, strings.TrimSpace(s[1])
+	default:
+		return 0, ""
+	}
 }
 
 func (c *ComputeUtil) diskName() string {
@@ -290,6 +317,21 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 		},
 		Labels:   parseLabels(d),
 		Metadata: metadata,
+	}
+
+	if c.maintenancePolicy != "" {
+		instance.Scheduling.OnHostMaintenance = d.MaintenancePolicy
+	}
+
+	acceleratorCount, acceleratorType := c.acceleratorCountAndType()
+
+	if acceleratorCount > 0 && len(acceleratorType) > 0 {
+		instance.GuestAccelerators = []*raw.AcceleratorConfig{
+			{
+				AcceleratorCount: int64(acceleratorCount),
+				AcceleratorType:  "https://www.googleapis.com/compute/v1/projects/" + c.project + "/zones/" + d.Zone + "/acceleratorTypes/" + acceleratorType,
+			},
+		}
 	}
 
 	if strings.Contains(c.subnetwork, "/subnetworks/") {

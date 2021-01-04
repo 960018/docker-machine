@@ -407,3 +407,57 @@ func prepareMetadataFile(t *testing.T, key string, content string) *os.File {
 
 	return file
 }
+
+func TestAccelerator(t *testing.T) {
+	tests := map[string]struct {
+		description   string
+		computeUtil   *ComputeUtil
+		expectedCount int
+		expectedType  string
+	}{
+		"unspecified": {
+			computeUtil:   &ComputeUtil{},
+			expectedCount: 0,
+			expectedType:  "",
+		},
+		"GPU type": {
+			computeUtil:   &ComputeUtil{accelerator: "nvidia-tesla-p100"},
+			expectedCount: 1,
+			expectedType:  "nvidia-tesla-p100",
+		},
+		"count and GPU type": {
+			computeUtil:   &ComputeUtil{accelerator: "2,nvidia-tesla-p100"},
+			expectedCount: 2,
+			expectedType:  "nvidia-tesla-p100",
+		},
+		"count and GPU type with whitespace": {
+			computeUtil:   &ComputeUtil{accelerator: " 2, nvidia-tesla-p100 "},
+			expectedCount: 2,
+			expectedType:  "nvidia-tesla-p100",
+		},
+		"too many commas": {
+			computeUtil:   &ComputeUtil{accelerator: "2,nvidia-tesla-p100,5"},
+			expectedCount: 0,
+			expectedType:  "",
+		},
+		"invalid count": {
+			computeUtil:   &ComputeUtil{accelerator: "ten,nvidia-tesla-p100"},
+			expectedCount: 0,
+			expectedType:  "",
+		},
+		"blank GPU type": {
+			computeUtil:   &ComputeUtil{accelerator: "10,"},
+			expectedCount: 10,
+			expectedType:  "",
+		},
+	}
+
+	for tn, tt := range tests {
+		t.Run(tn, func(t *testing.T) {
+			count, acceleratorType := tt.computeUtil.acceleratorCountAndType()
+
+			assert.Equal(t, tt.expectedCount, count)
+			assert.Equal(t, tt.expectedType, acceleratorType)
+		})
+	}
+}
