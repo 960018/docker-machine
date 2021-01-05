@@ -43,6 +43,7 @@ type ComputeUtil struct {
 	minCPUPlatform    string
 	acceleratorCount  int
 	acceleratorType   string
+	maintenancePolicy string
 
 	operationBackoffFactory *backoffFactory
 }
@@ -88,6 +89,7 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		minCPUPlatform:          driver.MinCPUPlatform,
 		acceleratorCount:        driver.AcceleratorCount,
 		acceleratorType:         driver.AcceleratorType,
+		maintenancePolicy:       driver.MaintenancePolicy,
 	}, nil
 }
 
@@ -294,6 +296,10 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 		},
 		Labels:   parseLabels(d),
 		Metadata: metadata,
+	}
+
+	if d.MaintenancePolicy != "" {
+		instance.Scheduling.OnHostMaintenance = d.MaintenancePolicy
 	}
 
 	if d.AcceleratorCount > 0 && len(d.AcceleratorType) > 0 {
