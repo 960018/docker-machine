@@ -63,24 +63,26 @@ type Driver struct {
 	MetadataFromFile  metadataMap
 	AcceleratorCount  int
 	AcceleratorType   string
+	MaintenancePolicy string
 
 	OperationBackoffFactory *backoffFactory
 }
 
 const (
-	defaultZone             = "us-central1-a"
-	defaultUser             = "docker-user"
-	defaultMachineType      = "n1-standard-1"
-	defaultImageName        = "ubuntu-os-cloud/global/images/ubuntu-1604-xenial-v20170721"
-	defaultServiceAccount   = "default"
-	defaultScopes           = "https://www.googleapis.com/auth/devstorage.read_only,https://www.googleapis.com/auth/logging.write,https://www.googleapis.com/auth/monitoring.write"
-	defaultDiskType         = "pd-standard"
-	defaultDiskSize         = 10
-	defaultNetwork          = "default"
-	defaultSubnetwork       = ""
-	defaultMinCPUPlatform   = ""
-	defaultAcceleratorCount = 0
-	defaultAcceleratorType  = ""
+	defaultZone              = "us-central1-a"
+	defaultUser              = "docker-user"
+	defaultMachineType       = "n1-standard-1"
+	defaultImageName         = "ubuntu-os-cloud/global/images/ubuntu-1604-xenial-v20170721"
+	defaultServiceAccount    = "default"
+	defaultScopes            = "https://www.googleapis.com/auth/devstorage.read_only,https://www.googleapis.com/auth/logging.write,https://www.googleapis.com/auth/monitoring.write"
+	defaultDiskType          = "pd-standard"
+	defaultDiskSize          = 10
+	defaultNetwork           = "default"
+	defaultSubnetwork        = ""
+	defaultMinCPUPlatform    = ""
+	defaultAcceleratorCount  = 0
+	defaultAcceleratorType   = ""
+	defaultMaintenancePolicy = ""
 
 	defaultGoogleOperationBackoffInitialInterval     = 1
 	defaultGoogleOperationBackoffRandomizationFactor = "0.5"
@@ -247,6 +249,12 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "Type of GPU to be attached to the instance, e.g, nvidia-tesla-p100",
 			EnvVar: "GOOGLE_ACCELERATOR_TYPE",
 			Value:  defaultAcceleratorType,
+		},
+		mcnflag.StringFlag{
+			Name:   "google-maintenance-policy",
+			Usage:  "Defines the maintenance behavior for this instance, e.g, MIGRATE or TERMINATE",
+			EnvVar: "GOOGLE_MAINTENANCE_POLICY",
+			Value:  defaultMaintenancePolicy,
 		},
 	}
 }
