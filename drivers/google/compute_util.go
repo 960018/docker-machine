@@ -97,21 +97,36 @@ func (c *ComputeUtil) acceleratorCountAndType() (int, string) {
 		return 0, ""
 	}
 
-	s := strings.Split(strings.TrimSpace(c.accelerator), ",")
+	split := strings.Split(strings.TrimSpace(c.accelerator), ",")
+	count := 1
+	acceleratorType := ""
 
-	switch len(s) {
-	case 1:
-		return 1, s[0]
-	case 2:
-		count, err := strconv.Atoi(s[0])
-		if err != nil {
-			return 0, ""
+	for _, kvStr := range split {
+		kv := strings.Split(kvStr, "=")
+
+		if len(kv) != 2 {
+			log.Infof("Invalid key/value parameter for accelerator: %s, ignoring", kvStr)
+			continue
 		}
 
-		return count, strings.TrimSpace(s[1])
-	default:
-		return 0, ""
+		key, value := strings.TrimSpace(kv[0]), strings.TrimSpace(kv[1])
+		switch key {
+		case "count":
+			var err error
+			count, err = strconv.Atoi(value)
+			if err != nil {
+				log.Infof("Invalid count for accelerator: %s", err)
+				return 0, ""
+			}
+		case "type":
+			acceleratorType = strings.TrimSpace(value)
+		default:
+			log.Infof("unknown accelerator parameter: %s", key)
+			return 0, ""
+		}
 	}
+
+	return count, acceleratorType
 }
 
 func (c *ComputeUtil) diskName() string {
@@ -320,7 +335,7 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 	}
 
 	if c.maintenancePolicy != "" {
-		instance.Scheduling.OnHostMaintenance = d.MaintenancePolicy
+		instance.Scheduling.OnHostMaintenance = c.maintenancePolicy
 	}
 
 	acceleratorCount, acceleratorType := c.acceleratorCountAndType()
@@ -329,7 +344,7 @@ func (c *ComputeUtil) createInstance(d *Driver) error {
 		instance.GuestAccelerators = []*raw.AcceleratorConfig{
 			{
 				AcceleratorCount: int64(acceleratorCount),
-				AcceleratorType:  "https://www.googleapis.com/compute/v1/projects/" + c.project + "/zones/" + d.Zone + "/acceleratorTypes/" + acceleratorType,
+				AcceleratorType:  "https://www.googleapis.com/compute/v1/projects/" + c.project + "/zones/" + c.zone + "/acceleratorTypes/" + acceleratorType,
 			},
 		}
 	}

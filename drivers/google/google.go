@@ -238,7 +238,7 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 		},
 		mcnflag.StringFlag{
 			Name:   "google-accelerator",
-			Usage:  "Count and specific type of GPU accelerators (format: count,type) to attach to the instance, e.g. 1,nvidia-tesla-p100",
+			Usage:  "Count and specific type of GPU accelerators (format: count=N,type=type) to attach to the instance, e.g. count=1,type=nvidia-tesla-p100",
 			EnvVar: "GOOGLE_ACCELERATOR",
 			Value:  defaultAccelerator,
 		},

@@ -421,32 +421,37 @@ func TestAccelerator(t *testing.T) {
 			expectedType:  "",
 		},
 		"GPU type": {
-			computeUtil:   &ComputeUtil{accelerator: "nvidia-tesla-p100"},
+			computeUtil:   &ComputeUtil{accelerator: "type=nvidia-tesla-p100"},
 			expectedCount: 1,
 			expectedType:  "nvidia-tesla-p100",
 		},
 		"count and GPU type": {
-			computeUtil:   &ComputeUtil{accelerator: "2,nvidia-tesla-p100"},
+			computeUtil:   &ComputeUtil{accelerator: "count=2,type=nvidia-tesla-p100"},
 			expectedCount: 2,
 			expectedType:  "nvidia-tesla-p100",
 		},
 		"count and GPU type with whitespace": {
-			computeUtil:   &ComputeUtil{accelerator: " 2, nvidia-tesla-p100 "},
+			computeUtil:   &ComputeUtil{accelerator: " count=2, type=nvidia-tesla-p100 "},
 			expectedCount: 2,
 			expectedType:  "nvidia-tesla-p100",
 		},
-		"too many commas": {
-			computeUtil:   &ComputeUtil{accelerator: "2,nvidia-tesla-p100,5"},
+		"unknown key=value pair": {
+			computeUtil:   &ComputeUtil{accelerator: "hello=world"},
 			expectedCount: 0,
 			expectedType:  "",
 		},
+		"extraneous key=value pair": {
+			computeUtil:   &ComputeUtil{accelerator: "count=2,type=nvidia-tesla-p100,5"},
+			expectedCount: 2,
+			expectedType:  "nvidia-tesla-p100",
+		},
 		"invalid count": {
-			computeUtil:   &ComputeUtil{accelerator: "ten,nvidia-tesla-p100"},
+			computeUtil:   &ComputeUtil{accelerator: "count=ten,type=nvidia-tesla-p100"},
 			expectedCount: 0,
 			expectedType:  "",
 		},
 		"blank GPU type": {
-			computeUtil:   &ComputeUtil{accelerator: "10,"},
+			computeUtil:   &ComputeUtil{accelerator: "count=10,"},
 			expectedCount: 10,
 			expectedType:  "",
 		},
