@@ -44,6 +44,7 @@ const (
 	defaultSSHUser              = "ubuntu"
 	defaultSpotPrice            = "0.50"
 	defaultBlockDurationMinutes = 0
+	defaultMetadataToken        = "optional"
 )
 
 const (
@@ -113,6 +114,7 @@ type Driver struct {
 	Endpoint                string
 	DisableSSL              bool
 	UserDataFile            string
+	MetadataToken           string
 
 	spotInstanceRequestId string
 }
@@ -287,6 +289,11 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "path to file with cloud-init user data",
 			EnvVar: "AWS_USERDATA",
 		},
+		mcnflag.StringFlag{
+			Name:  "amazonec2-metadata-token",
+			Usage: "Whether the metadata token is required or optional",
+			Value: "optional",
+		},
 	}
 }
 
@@ -308,6 +315,7 @@ func NewDriver(hostName, storePath string) *Driver {
 			MachineName: hostName,
 			StorePath:   storePath,
 		},
+		MetadataToken: defaultMetadataToken,
 	}
 
 	driver.clientFactory = driver.buildClient
@@ -385,7 +393,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.RetryCount = flags.Int("amazonec2-retries")
 	d.OpenPorts = flags.StringSlice("amazonec2-open-port")
 	d.UserDataFile = flags.String("amazonec2-userdata")
-
+	d.MetadataToken = flags.String("amazonec2-metadata-token")
 	d.DisableSSL = flags.Bool("amazonec2-insecure-transport")
 
 	if d.DisableSSL && d.Endpoint == "" {
@@ -739,7 +747,10 @@ func (d *Driver) innerCreate() error {
 			KeyName:           &d.KeyName,
 			InstanceType:      &d.InstanceType,
 			NetworkInterfaces: netSpecs,
-			Monitoring:        &ec2.RunInstancesMonitoringEnabled{Enabled: aws.Bool(d.Monitoring)},
+			MetadataOptions: &ec2.InstanceMetadataOptionsRequest{
+				HttpTokens: &d.MetadataToken,
+			},
+			Monitoring: &ec2.RunInstancesMonitoringEnabled{Enabled: aws.Bool(d.Monitoring)},
 			IamInstanceProfile: &ec2.IamInstanceProfileSpecification{
 				Name: &d.IamInstanceProfile,
 			},
@@ -1313,6 +1324,10 @@ func (d *Driver) getRegionZone() string {
 		return d.Region + d.Zone
 	}
 	return d.Zone
+}
+
+func (d *Driver) getMetadataTokenSetting() string {
+	return d.MetadataToken
 }
 
 func generateId() string {
