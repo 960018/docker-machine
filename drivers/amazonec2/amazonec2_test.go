@@ -324,6 +324,25 @@ func TestGetRegionZoneForDefaultEndpoint(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestMetadataTokenSetting(t *testing.T) {
+	driver := NewCustomTestDriver(&fakeEC2WithLogin{})
+	driver.awsCredentialsFactory = NewValidAwsCredentials
+	options := &commandstest.FakeFlagger{
+		Data: map[string]interface{}{
+			"name":                     "test",
+			"amazonec2-metadata-token": "optional",
+			"amazonec2-region":         "us-east-1",
+			"amazonec2-zone":           "e",
+		},
+	}
+
+	err := driver.SetConfigFromFlags(options)
+
+	metadataTokenSetting := driver.getMetadataTokenSetting()
+
+	assert.Equal(t, "optional", metadataTokenSetting)
+	assert.NoError(t, err)
+}
 func TestGetRegionZoneForCustomEndpoint(t *testing.T) {
 	driver := NewCustomTestDriver(&fakeEC2WithLogin{})
 	driver.awsCredentialsFactory = NewValidAwsCredentials
