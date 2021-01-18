@@ -294,12 +294,12 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 		mcnflag.StringFlag{
 			Name:  "amazonec2-metadata-token",
 			Usage: "Whether the metadata token is required or optional",
-			Value: "optional",
+			Value: defaultMetadataTokenSetting,
 		},
 		mcnflag.IntFlag{
 			Name:  "amazonec2-metadata-token-response-hop-limit",
 			Usage: "The number of network hops that the metadata token can travel",
-			Value: 1,
+			Value: defaultMetadataTokenResponseHopLimit,
 		},
 	}
 }
@@ -1334,14 +1334,6 @@ func (d *Driver) getRegionZone() string {
 		return d.Region + d.Zone
 	}
 	return d.Zone
-}
-
-func (d *Driver) getMetadataTokenSetting() string {
-	return d.MetadataTokenSetting
-}
-
-func (d *Driver) getMetadataTokenResponseHopLimit() int64 {
-	return d.MetadataTokenResponseHopLimit
 }
 
 func generateId() string {
