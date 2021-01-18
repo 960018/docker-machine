@@ -338,7 +338,7 @@ func TestMetadataTokenSetting(t *testing.T) {
 
 	err := driver.SetConfigFromFlags(options)
 
-	metadataTokenSetting := driver.getMetadataTokenSetting()
+	metadataTokenSetting := driver.MetadataTokenSetting
 
 	assert.Equal(t, "optional", metadataTokenSetting)
 	assert.NoError(t, err)
@@ -358,7 +358,7 @@ func TestMetadataTokenResponseHopLimit(t *testing.T) {
 
 	err := driver.SetConfigFromFlags(options)
 
-	metadataTokenResponseHopLimit := driver.getMetadataTokenResponseHopLimit()
+	metadataTokenResponseHopLimit := driver.MetadataTokenResponseHopLimit
 
 	assert.Equal(t, int64(1), metadataTokenResponseHopLimit)
 	assert.NoError(t, err)
