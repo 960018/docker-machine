@@ -415,10 +415,8 @@ func (d *Driver) Create() error {
 		return err
 	}
 
-	if !d.SkipFirewall {
-		if err := c.openFirewallPorts(d); err != nil {
-			return err
-		}
+	if err := c.openFirewallPorts(d); err != nil {
+		return err
 	}
 
 	if d.UseExisting {
