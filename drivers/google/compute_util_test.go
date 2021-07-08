@@ -1,15 +1,21 @@
 package google
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	raw "google.golang.org/api/compute/v1"
+	"google.golang.org/api/googleapi"
+	"google.golang.org/api/option"
 )
 
 func TestDefaultTag(t *testing.T) {
@@ -75,10 +81,68 @@ func TestLabels(t *testing.T) {
 	}
 }
 
-func TestOpenFirewallPortsWithSkip(t *testing.T) {
-	var test = &ComputeUtil{skipFirewall: true}
-	err := test.openFirewallPorts(&Driver{})
-	assert.Equal(t, err, nil)
+func TestOpenFirewallPorts(t *testing.T) {
+	tests := map[string]struct {
+		skipFirewall bool
+		mockResponse http.HandlerFunc
+		expectedErr  error
+	}{
+		"skip firewall": {
+			skipFirewall: true,
+			mockResponse: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			}),
+			expectedErr: nil,
+		},
+		"firewall rules exists": {
+			skipFirewall: false,
+			mockResponse: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				println(r.URL.String())
+				firewall := raw.Firewall{
+
+					Allowed: []*raw.FirewallAllowed{
+						{
+							IPProtocol: "tcp",
+							Ports:      []string{"22", "2376"},
+						},
+					},
+				}
+				var body io.Reader = nil
+				body, err := googleapi.WithoutDataWrapper.JSONReader(firewall)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				fmt.Fprint(w, body)
+			}),
+			expectedErr: nil,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(tt.mockResponse)
+			defer srv.Close()
+
+			svc, err := raw.NewService(context.Background(), option.WithoutAuthentication(), option.WithEndpoint(srv.URL))
+
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			computeUtil := ComputeUtil{
+				skipFirewall: tt.skipFirewall,
+				service:      svc,
+			}
+
+			driver := &Driver{}
+
+			err = computeUtil.openFirewallPorts(driver)
+			if err != nil {
+				assert.Error(t, tt.expectedErr, err.Error())
+				return
+			}
+		})
+	}
 }
 
 func TestPortsUsed(t *testing.T) {
