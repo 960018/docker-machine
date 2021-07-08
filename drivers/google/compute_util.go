@@ -44,6 +44,7 @@ type ComputeUtil struct {
 	minCPUPlatform    string
 	accelerator       string
 	maintenancePolicy string
+	skipFirewall      bool
 
 	operationBackoffFactory *backoffFactory
 }
@@ -89,6 +90,7 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		minCPUPlatform:          driver.MinCPUPlatform,
 		accelerator:             driver.Accelerator,
 		maintenancePolicy:       driver.MaintenancePolicy,
+		skipFirewall:            driver.SkipFirewall,
 	}, nil
 }
 
@@ -231,7 +233,7 @@ func (c *ComputeUtil) portsUsed() ([]string, error) {
 // openFirewallPorts configures the firewall to open docker and swarm ports.
 func (c *ComputeUtil) openFirewallPorts(d *Driver) error {
 
-	if d.SkipFirewall {
+	if c.skipFirewall {
 		log.Infof("Skipping opening firewall ports")
 		return nil
 	}

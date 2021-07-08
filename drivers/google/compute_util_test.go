@@ -75,6 +75,12 @@ func TestLabels(t *testing.T) {
 	}
 }
 
+func TestOpenFirewallPortsWithSkip(t *testing.T) {
+	var test = &ComputeUtil{skipFirewall: true}
+	err := test.openFirewallPorts(&Driver{})
+	assert.Equal(t, err, nil)
+}
+
 func TestPortsUsed(t *testing.T) {
 	var tests = []struct {
 		description   string
@@ -90,7 +96,6 @@ func TestPortsUsed(t *testing.T) {
 
 	for _, test := range tests {
 		ports, err := test.computeUtil.portsUsed()
-
 		assert.Equal(t, test.expectedPorts, ports)
 		assert.Equal(t, test.expectedError, err)
 	}
