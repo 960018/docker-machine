@@ -232,7 +232,6 @@ func (c *ComputeUtil) portsUsed() ([]string, error) {
 
 // openFirewallPorts configures the firewall to open docker and swarm ports.
 func (c *ComputeUtil) openFirewallPorts(d *Driver) error {
-
 	if c.skipFirewall {
 		log.Infof("Skipping opening firewall ports")
 		return nil
