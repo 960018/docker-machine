@@ -1,6 +1,7 @@
 package google
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -11,11 +12,10 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff"
-	"github.com/docker/machine/drivers/driverutil"
-	"github.com/docker/machine/libmachine/log"
 	raw "google.golang.org/api/compute/v1"
 
-	"errors"
+	"github.com/docker/machine/drivers/driverutil"
+	"github.com/docker/machine/libmachine/log"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -288,6 +288,7 @@ func (c *ComputeUtil) openFirewallPorts(d *Driver) error {
 
 // instance retrieves the instance.
 func (c *ComputeUtil) instance() (*raw.Instance, error) {
+	log.Debugf("Requesting instance: project=%q, zone=%q, instanceName=%q", c.project, c.zone, c.instanceName)
 	return c.service.Instances.Get(c.project, c.zone, c.instanceName).Do()
 }
 

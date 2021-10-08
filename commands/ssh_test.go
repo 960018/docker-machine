@@ -3,6 +3,8 @@ package commands
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/docker/machine/commands/commandstest"
 	"github.com/docker/machine/drivers/fakedriver"
 	"github.com/docker/machine/libmachine"
@@ -12,7 +14,6 @@ import (
 	"github.com/docker/machine/libmachine/ssh"
 	"github.com/docker/machine/libmachine/ssh/sshtest"
 	"github.com/docker/machine/libmachine/state"
-	"github.com/stretchr/testify/assert"
 )
 
 type FakeSSHClientCreator struct {
@@ -90,7 +91,7 @@ func TestCmdSSH(t *testing.T) {
 					},
 				},
 			},
-			expectedErr: errStateInvalidForSSH{"default"},
+			expectedErr: errStateInvalidForSSH{HostName: "default", State: state.Stopped},
 		},
 	}
 
