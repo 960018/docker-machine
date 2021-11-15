@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/codegangsta/cli"
+
 	"github.com/docker/machine/commands/mcndirs"
 	"github.com/docker/machine/libmachine"
 	"github.com/docker/machine/libmachine/crashreport"
@@ -317,6 +318,18 @@ var Commands = []cli.Command{
 			cli.BoolFlag{
 				Name:  "client-certs",
 				Usage: "Also regenerate client certificates and CA.",
+			},
+		},
+	},
+	{
+		Name:        "regenerate-base-certs",
+		Usage:       "Regenerate the base TLS Certificates only",
+		Description: "No arguments expected",
+		Action:      runCommand(cmdRegenerateBaseCerts),
+		Flags: []cli.Flag{
+			cli.BoolFlag{
+				Name:  "force, f",
+				Usage: "Force rebuild and do not prompt",
 			},
 		},
 	},
