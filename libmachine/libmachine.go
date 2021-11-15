@@ -2,9 +2,8 @@ package libmachine
 
 import (
 	"fmt"
-	"path/filepath"
-
 	"io"
+	"path/filepath"
 
 	"github.com/docker/machine/drivers/errdriver"
 	"github.com/docker/machine/libmachine/auth"
@@ -65,15 +64,7 @@ func (api *Client) NewHost(driverName string, rawDriver []byte) (*host.Host, err
 		Driver:        driver,
 		DriverName:    driver.DriverName(),
 		HostOptions: &host.Options{
-			AuthOptions: &auth.Options{
-				CertDir:          api.certsDir,
-				CaCertPath:       filepath.Join(api.certsDir, "ca.pem"),
-				CaPrivateKeyPath: filepath.Join(api.certsDir, "ca-key.pem"),
-				ClientCertPath:   filepath.Join(api.certsDir, "cert.pem"),
-				ClientKeyPath:    filepath.Join(api.certsDir, "key.pem"),
-				ServerCertPath:   filepath.Join(api.GetMachinesDir(), "server.pem"),
-				ServerKeyPath:    filepath.Join(api.GetMachinesDir(), "server-key.pem"),
-			},
+			AuthOptions: api.AuthOptions(),
 			EngineOptions: &engine.Options{
 				InstallURL:    drivers.DefaultEngineInstallURL,
 				StorageDriver: "overlay2",
@@ -86,6 +77,18 @@ func (api *Client) NewHost(driverName string, rawDriver []byte) (*host.Host, err
 			},
 		},
 	}, nil
+}
+
+func (api *Client) AuthOptions() *auth.Options {
+	return &auth.Options{
+		CertDir:          api.certsDir,
+		CaCertPath:       filepath.Join(api.certsDir, "ca.pem"),
+		CaPrivateKeyPath: filepath.Join(api.certsDir, "ca-key.pem"),
+		ClientCertPath:   filepath.Join(api.certsDir, "cert.pem"),
+		ClientKeyPath:    filepath.Join(api.certsDir, "key.pem"),
+		ServerCertPath:   filepath.Join(api.GetMachinesDir(), "server.pem"),
+		ServerKeyPath:    filepath.Join(api.GetMachinesDir(), "server-key.pem"),
+	}
 }
 
 func (api *Client) Load(name string) (*host.Host, error) {
