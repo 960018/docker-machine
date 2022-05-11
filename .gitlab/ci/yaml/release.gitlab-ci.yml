@@ -24,19 +24,20 @@ release development S3:
   - .release_S3
   environment:
     name: development/S3/${CI_COMMIT_REF_NAME}
-    on_stop: stop release development S3
+    on_stop: 'stop release development S3'
 
 stop release development S3:
   dependencies: []
+  needs:
+  - release development S3
   extends:
-  - .rules:release:development
+  - .rules:release:development:manual
   - .release
   - .release_S3
   variables:
     GIT_STRATEGY: none
   script:
   - aws s3 rm ${S3_URL} --recursive
-  when: manual
   environment:
     name: development/S3/${CI_COMMIT_REF_NAME}
     action: stop
