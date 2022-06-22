@@ -13,7 +13,3 @@ Builds from this fork can be downloaded at https://gitlab-docker-machine-downloa
 The docs for Docker Machine are now here:
 https://github.com/docker/docker.github.io/blob/173d3c65f8e7df2a8c0323594419c18086fc3a30/machine/index.md
 
-Web preview of docs is available here:
-
-https://deploy-preview-13517--docsdocker.netlify.app/machine/
-
