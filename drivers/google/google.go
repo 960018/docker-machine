@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff"
+
 	"github.com/docker/machine/libmachine/drivers"
 	"github.com/docker/machine/libmachine/log"
 	"github.com/docker/machine/libmachine/mcnflag"
@@ -468,10 +469,12 @@ func (d *Driver) GetState() (state.State, error) {
 
 	// All we care about is whether the disk exists, so we just check disk for a nil value.
 	// There will be no error if disk is not nil.
-	instance, _ := c.instance()
+	instance, err := c.instance()
 	if instance == nil {
-		disk, _ := c.disk()
+		log.Debugf("instance not found: %v", err)
+		disk, err := c.disk()
 		if disk == nil {
+			log.Debugf("disk not found: %v", err)
 			return state.None, nil
 		}
 		return state.Stopped, nil
@@ -485,6 +488,9 @@ func (d *Driver) GetState() (state.State, error) {
 	case "STOPPING", "STOPPED", "TERMINATED":
 		return state.Stopped, nil
 	}
+
+	log.Debugf("Unknown instance status: %q", instance.Status)
+
 	return state.None, nil
 }
 
