@@ -20,6 +20,7 @@
   script: make build-x
 
 darwin amd64: *build_x
+darwin arm64: *build_x
 linux amd64: *build_x
 linux arm: *build_x
 linux arm64: *build_x
