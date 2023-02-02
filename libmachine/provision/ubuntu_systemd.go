@@ -130,6 +130,10 @@ func (provisioner *UbuntuSystemdProvisioner) Provision(swarmOptions swarm.Option
 		return err
 	}
 
+	if err := makeDockerOptionsDir(provisioner); err != nil {
+		return err
+	}
+
 	provisioner.AuthOptions = setRemoteAuthOptions(provisioner)
 
 	log.Debug("configuring auth")
