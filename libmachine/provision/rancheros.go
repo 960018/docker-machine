@@ -128,6 +128,10 @@ func (provisioner *RancherProvisioner) Provision(swarmOptions swarm.Options, aut
 	}
 
 	log.Debugf("Preparing certificates")
+	if err := makeDockerOptionsDir(provisioner); err != nil {
+		return err
+	}
+
 	provisioner.AuthOptions = setRemoteAuthOptions(provisioner)
 
 	log.Debugf("Setting up certificates")

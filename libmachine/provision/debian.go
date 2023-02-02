@@ -120,6 +120,10 @@ func (provisioner *DebianProvisioner) Provision(swarmOptions swarm.Options, auth
 		return err
 	}
 
+	if err := makeDockerOptionsDir(provisioner); err != nil {
+		return err
+	}
+
 	provisioner.AuthOptions = setRemoteAuthOptions(provisioner)
 
 	log.Debug("configuring auth")

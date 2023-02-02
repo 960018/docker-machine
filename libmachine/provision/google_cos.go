@@ -90,6 +90,10 @@ func (p *GoogleCOSProvisioner) Provision(swarmOptions swarm.Options, authOptions
 	}
 
 	log.Debugf("Preparing remote auth options")
+	if err := makeDockerOptionsDir(p); err != nil {
+		return err
+	}
+
 	p.AuthOptions = setRemoteAuthOptions(p)
 
 	log.Debug("Configuring auth")

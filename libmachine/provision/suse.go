@@ -176,6 +176,10 @@ func (provisioner *SUSEProvisioner) Provision(swarmOptions swarm.Options, authOp
 		return err
 	}
 
+	if err := makeDockerOptionsDir(provisioner); err != nil {
+		return err
+	}
+
 	provisioner.AuthOptions = setRemoteAuthOptions(provisioner)
 
 	log.Debug("Configuring auth")
