@@ -176,7 +176,10 @@ func (provisioner *SUSEProvisioner) Provision(swarmOptions swarm.Options, authOp
 		return err
 	}
 
-	provisioner.AuthOptions = setRemoteAuthOptions(provisioner)
+	log.Debugf("Preparing certificates")
+	if err := setupRemoteAuthOptions(provisioner); err != nil {
+		return err
+	}
 
 	log.Debug("Configuring auth")
 	if err := ConfigureAuth(provisioner); err != nil {
