@@ -629,9 +629,6 @@ func (d *Driver) Create() error {
 
 func (d *Driver) innerCreate() error {
 	log.Infof("Launching instance...")
-
-	tagSpecifications := d.createTagSpecifications()
-
 	if err := d.createKeyPair(); err != nil {
 		return fmt.Errorf("unable to create key pair: %s", err)
 	}
@@ -671,11 +668,14 @@ func (d *Driver) innerCreate() error {
 
 	var instance *ec2.Instance
 
+	// As mentioned in AWS Doc
+	// https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#concepts-spot-instances-request-tags
+	// Tags are not set at the spot instance creation. To avoid the problem, the tags are only created
+	// only when the spot instance is already available
 	req := ec2.RunInstancesInput{
-		TagSpecifications: tagSpecifications,
-		ImageId:           &d.AMI,
-		MinCount:          aws.Int64(1),
-		MaxCount:          aws.Int64(1),
+		ImageId:  &d.AMI,
+		MinCount: aws.Int64(1),
+		MaxCount: aws.Int64(1),
 		Placement: &ec2.Placement{
 			AvailabilityZone: &regionZone,
 		},
@@ -704,7 +704,10 @@ func (d *Driver) innerCreate() error {
 		if d.BlockDurationMinutes != 0 {
 			req.InstanceMarketOptions.SpotOptions.BlockDurationMinutes = &d.BlockDurationMinutes
 		}
+	} else {
+		req.TagSpecifications = d.createTagSpecifications()
 	}
+
 	inst, err := d.getClient().RunInstances(&req)
 
 	if err != nil {
@@ -716,6 +719,18 @@ func (d *Driver) innerCreate() error {
 	instance = inst.Instances[0]
 
 	d.InstanceId = *instance.InstanceId
+
+	if d.RequestSpotInstance {
+		req := ec2.CreateTagsInput{
+			Resources: []*string{instance.InstanceId},
+			Tags:      d.createTags(),
+		}
+
+		_, err := d.getClient().CreateTags(&req)
+		if err != nil {
+			return fmt.Errorf("Error setting tags for the spot instance: %v", err)
+		}
+	}
 
 	log.Debug("waiting for ip address to become available")
 	if err := mcnutils.WaitFor(d.instanceIpAvailable); err != nil {
@@ -1018,6 +1033,24 @@ func (d *Driver) securityGroupAvailableFunc(id string) func() bool {
 }
 
 func (d *Driver) createTagSpecifications() []*ec2.TagSpecification {
+	tags := d.createTags()
+	return []*ec2.TagSpecification{
+		{
+			ResourceType: aws.String("instance"),
+			Tags:         tags,
+		},
+		{
+			ResourceType: aws.String("volume"),
+			Tags:         tags,
+		},
+		{
+			ResourceType: aws.String("network-interface"),
+			Tags:         tags,
+		},
+	}
+}
+
+func (d *Driver) createTags() []*ec2.Tag {
 	var tags []*ec2.Tag
 	tags = append(tags, &ec2.Tag{
 		Key:   aws.String("Name"),
@@ -1037,29 +1070,7 @@ func (d *Driver) createTagSpecifications() []*ec2.TagSpecification {
 		}
 	}
 
-	if d.RequestSpotInstance {
-		return []*ec2.TagSpecification{
-			{
-				ResourceType: aws.String("spot-instances-request"),
-				Tags:         tags,
-			},
-		}
-	} else {
-		return []*ec2.TagSpecification{
-			{
-				ResourceType: aws.String("instance"),
-				Tags:         tags,
-			},
-			{
-				ResourceType: aws.String("volume"),
-				Tags:         tags,
-			},
-			{
-				ResourceType: aws.String("network-interface"),
-				Tags:         tags,
-			},
-		}
-	}
+	return tags
 }
 
 func (d *Driver) getTagResources() []*string {
