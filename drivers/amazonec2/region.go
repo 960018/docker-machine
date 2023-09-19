@@ -32,6 +32,7 @@ var regionDetails = map[string]*region{
 	"eu-west-1":       {AmiId: "ami-00e7df8df28dfa791"},
 	"eu-west-2":       {AmiId: "ami-00826bd51e68b1487"},
 	"eu-west-3":       {AmiId: "ami-0a21d1c76ac56fee7"},
+	"il-central-1":    {AmiId: "ami-094d7561801f53e21"},
 	"me-central-1":    {AmiId: "ami-04e59379df0314070"},
 	"me-south-1":      {AmiId: "ami-05b680b37c7917206"},
 	"sa-east-1":       {AmiId: "ami-077518a464c82703b"},
