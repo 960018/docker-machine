@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -eo pipefail
+set -x
 
 LATEST_STABLE_TAG=$(git -c versionsort.prereleaseSuffix="-rc" tag -l "v*.*.*" --sort=-v:refname | awk '!/rc/' | head -n 1)
 echo "Latest stable tag is: ${LATEST_STABLE_TAG}"
