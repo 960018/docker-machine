@@ -1,10 +1,29 @@
 #!/usr/bin/env bash
 
-set -eo pipefail
 set -x
+
+echo "debugging"
+
+git -c versionsort.prereleaseSuffix="-rc" tag -l "v*.*.*" --sort=-v:refname
+echo $?
+
+echo "debugging 2"
+
+git -c versionsort.prereleaseSuffix="-rc" tag -l "v*.*.*" --sort=-v:refname | awk '!/rc/'
+echo $?
+
+echo "debugging 3"
+git -c versionsort.prereleaseSuffix="-rc" tag -l "v*.*.*" --sort=-v:refname | awk '!/rc/' | head -n 1
+echo $?
+
+echo "debugging 4"
+
+set -eo pipefail
 
 LATEST_STABLE_TAG=$(git -c versionsort.prereleaseSuffix="-rc" tag -l "v*.*.*" --sort=-v:refname | awk '!/rc/' | head -n 1)
 echo "Latest stable tag is: ${LATEST_STABLE_TAG}"
+
+echo "debugging 5"
 
 __aws_s3_sync() {
   local source="$1"
