@@ -65,7 +65,7 @@ Environment variables and default values:
 | **`--google-project`**     | `GOOGLE_PROJECT`         | -                                    |
 | `--google-zone`            | `GOOGLE_ZONE`            | `us-central1-a`                      |
 | `--google-machine-type`    | `GOOGLE_MACHINE_TYPE`    | `f1-standard-1`                      |
-| `--google-machine-image`   | `GOOGLE_MACHINE_IMAGE`   | `ubuntu-1510-wily-v20151114`         |
+| `--google-machine-image`   | `GOOGLE_MACHINE_IMAGE`   | `ubuntu-2004-focal-v20240229`        |
 | `--google-username`        | `GOOGLE_USERNAME`        | `docker-user`                        |
 | `--google-scopes`          | `GOOGLE_SCOPES`          | `devstorage.read_only,logging.write` |
 | `--google-disk-size`       | `GOOGLE_DISK_SIZE`       | `10`                                 |
