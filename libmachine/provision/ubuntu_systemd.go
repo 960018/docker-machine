@@ -147,6 +147,7 @@ func (provisioner *UbuntuSystemdProvisioner) Provision(swarmOptions swarm.Option
 	// enable in systemd
 	log.Debug("enabling docker in systemd")
 	if err = provisioner.Service("docker", serviceaction.Enable); err != nil {
+		provisioner.SSHCommand("sudo systemctl status docker")
 		return err
 	}
 
