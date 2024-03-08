@@ -6,6 +6,7 @@ import (
 	"text/template"
 
 	"github.com/docker/machine/libmachine/drivers"
+	"github.com/docker/machine/libmachine/log"
 	"github.com/docker/machine/libmachine/provision/serviceaction"
 	"github.com/docker/machine/libmachine/versioncmp"
 )
@@ -93,7 +94,8 @@ func (p *SystemdProvisioner) Service(name string, action serviceaction.ServiceAc
 
 	command := fmt.Sprintf("sudo systemctl -f %s %s", action.String(), name)
 
-	if _, err := p.SSHCommand(command); err != nil {
+	if output, err := p.SSHCommand(command); err != nil {
+		log.Debugf("'sudo systemctl -f %s %s' output:\n%s", action.String(), name, output)
 		return err
 	}
 
