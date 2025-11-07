@@ -24,7 +24,7 @@ import (
 	"github.com/exoscale/egoscale/v3/credentials"
 )
 
-// Driver is the struct compatible with github.com/rancher/machine/libmachine/drivers.Driver interface
+// Driver is the struct compatible with github.com/docker/machine/libmachine/drivers.Driver interface
 type Driver struct {
 	*drivers.BaseDriver
 	URL              string
@@ -51,7 +51,7 @@ const (
 	defaultImage            = "Linux Ubuntu 24.04 LTS 64-bit"
 	defaultAvailabilityZone = "ch-dk-2"
 	defaultSSHUser          = "root"
-	defaultSecurityGroup    = "rancher-machine"
+	defaultSecurityGroup    = "docker-machine"
 	defaultCloudInit        = `#cloud-config
 manage_etc_hosts: localhost
 `
@@ -342,7 +342,7 @@ func (d *Driver) createDefaultSecurityGroup(ctx context.Context, sgName string) 
 
 	op, err := client.CreateSecurityGroup(ctx, v3.CreateSecurityGroupRequest{
 		Name:        sgName,
-		Description: "created by rancher-machine",
+		Description: "created by docker-machine",
 	})
 	if err != nil {
 		return "", err
@@ -361,15 +361,15 @@ func (d *Driver) createDefaultSecurityGroup(ctx context.Context, sgName string) 
 	}
 
 	var (
-		dockerPort         int64 = 2376
-		swarmPort          int64 = 3376
-		kubeApiPort        int64 = 6443
-		httpPort           int64 = 80
-		sshPort            int64 = 22
-		rancherWebhookPort int64 = 8443
-		httpsPort          int64 = 443
-		supervisorPort     int64 = 9345
-		nodeExporter       int64 = 9796
+		dockerPort        int64 = 2376
+		swarmPort         int64 = 3376
+		kubeApiPort       int64 = 6443
+		httpPort          int64 = 80
+		sshPort           int64 = 22
+		dockerWebhookPort int64 = 8443
+		httpsPort         int64 = 443
+		supervisorPort    int64 = 9345
+		nodeExporter      int64 = 9796
 
 		etcdPorts            = []int64{2379, 2380}
 		vxlanPorts           = []int64{4789, 4789}
@@ -401,10 +401,10 @@ func (d *Driver) createDefaultSecurityGroup(ctx context.Context, sgName string) 
 			EndPort:     swarmPort,
 		},
 		{
-			Description: "Rancher webhook",
+			Description: "docker webhook",
 			Protocol:    v3.AddRuleToSecurityGroupRequestProtocolTCP,
-			StartPort:   rancherWebhookPort,
-			EndPort:     rancherWebhookPort,
+			StartPort:   dockerWebhookPort,
+			EndPort:     dockerWebhookPort,
 		},
 		{
 			Description: "Kubernetes API",
@@ -542,7 +542,7 @@ func (d *Driver) createDefaultAffinityGroup(ctx context.Context, agName string) 
 
 	resp, err := client.CreateAntiAffinityGroup(ctx, v3.CreateAntiAffinityGroupRequest{
 		Name:        agName,
-		Description: "created by rancher-machine",
+		Description: "created by docker-machine",
 	})
 	if err != nil {
 		return "", err
@@ -701,7 +701,7 @@ func (d *Driver) Create() error {
 
 	// SSH key pair
 	if d.SSHKey == "" {
-		keyPairName := fmt.Sprintf("rancher-machine-%s", d.MachineName)
+		keyPairName := fmt.Sprintf("docker-machine-%s", d.MachineName)
 		log.Infof("Generate an SSH keypair...")
 
 		err = ssh.GenerateSSHKey(d.GetSSHKeyPath())
@@ -754,7 +754,7 @@ ssh_authorized_keys:
 - `
 		cloudInit = bytes.Join([][]byte{cloudInit, []byte(sshAuthorizedKeys), pubKey}, []byte(""))
 
-		// Copying the private key into rancher-machine
+		// Copying the private key into docker-machine
 		if errCopy := mcnutils.CopyFile(sshKey, d.GetSSHKeyPath()); errCopy != nil {
 			return fmt.Errorf("unable to copy SSH file: %s", errCopy)
 		}
