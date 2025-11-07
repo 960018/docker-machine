@@ -16,7 +16,6 @@ require (
 	github.com/exoscale/egoscale/v3 v3.1.28
 	github.com/intel-go/cpuid v0.0.0-20181003105527-1a4a6f06a1c6
 	github.com/rackspace/gophercloud v1.0.1-0.20150408191457-ce0f487f6747
-	github.com/rancher/machine v0.16.2
 	github.com/skarademir/naturalsort v0.0.0-20150715044055-69a5d87bef62
 	github.com/stretchr/testify v1.9.0
 	github.com/vmware/govcloudair v0.0.2
