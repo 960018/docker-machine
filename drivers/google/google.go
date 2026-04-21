@@ -368,7 +368,13 @@ func metadataMapFromStringSlice(slice []string) metadataMap {
 }
 
 // PreCreateCheck is called to enforce pre-creation steps
-func (d *Driver) PreCreateCheck() error {
+func (d *Driver) PreCreateCheck() (err error) {
+	// Flatten any multi-line error (notably googleapi.Error.Details, which is
+	// pretty-printed by an indenting json.Encoder) before it escapes the
+	// driver, so downstream line-oriented log consumers (e.g. gitlab-runner's
+	// docker-machine stderr pump) emit one record per error instead of one
+	// record per fragment.
+	defer func() { err = singleLineError(err) }()
 	c, err := newComputeUtil(d)
 	if err != nil {
 		return err
@@ -401,7 +407,8 @@ func (d *Driver) PreCreateCheck() error {
 }
 
 // Create creates a GCE VM instance acting as a docker host.
-func (d *Driver) Create() error {
+func (d *Driver) Create() (err error) {
+	defer func() { err = singleLineError(err) }()
 	log.Infof("Generating SSH Key")
 
 	if err := ssh.GenerateSSHKey(d.GetSSHKeyPath()); err != nil {
@@ -426,7 +433,8 @@ func (d *Driver) Create() error {
 }
 
 // GetURL returns the URL of the remote docker daemon.
-func (d *Driver) GetURL() (string, error) {
+func (d *Driver) GetURL() (url string, err error) {
+	defer func() { err = singleLineError(err) }()
 	ip, err := d.GetIP()
 	if err != nil {
 		return "", err
@@ -436,7 +444,8 @@ func (d *Driver) GetURL() (string, error) {
 }
 
 // GetIP returns the IP address of the GCE instance.
-func (d *Driver) GetIP() (string, error) {
+func (d *Driver) GetIP() (addr string, err error) {
+	defer func() { err = singleLineError(err) }()
 	if d.IPAddress != "" {
 		return d.IPAddress, nil
 	}
@@ -460,7 +469,8 @@ func (d *Driver) GetIP() (string, error) {
 }
 
 // GetState returns a docker.hosts.state.State value representing the current state of the host.
-func (d *Driver) GetState() (state.State, error) {
+func (d *Driver) GetState() (s state.State, err error) {
+	defer func() { err = singleLineError(err) }()
 	c, err := newComputeUtil(d)
 	if err != nil {
 		return state.None, err
@@ -489,7 +499,8 @@ func (d *Driver) GetState() (state.State, error) {
 }
 
 // Start starts an existing GCE instance or create an instance with an existing disk.
-func (d *Driver) Start() error {
+func (d *Driver) Start() (err error) {
+	defer func() { err = singleLineError(err) }()
 	c, err := newComputeUtil(d)
 	if err != nil {
 		return err
@@ -517,7 +528,8 @@ func (d *Driver) Start() error {
 }
 
 // Stop stops an existing GCE instance.
-func (d *Driver) Stop() error {
+func (d *Driver) Stop() (err error) {
+	defer func() { err = singleLineError(err) }()
 	c, err := newComputeUtil(d)
 	if err != nil {
 		return err
@@ -532,7 +544,8 @@ func (d *Driver) Stop() error {
 }
 
 // Restart restarts a machine which is known to be running.
-func (d *Driver) Restart() error {
+func (d *Driver) Restart() (err error) {
+	defer func() { err = singleLineError(err) }()
 	if err := d.Stop(); err != nil {
 		return err
 	}
@@ -541,12 +554,14 @@ func (d *Driver) Restart() error {
 }
 
 // Kill stops an existing GCE instance.
-func (d *Driver) Kill() error {
+func (d *Driver) Kill() (err error) {
+	defer func() { err = singleLineError(err) }()
 	return d.Stop()
 }
 
 // Remove deletes the GCE instance and the disk.
-func (d *Driver) Remove() error {
+func (d *Driver) Remove() (err error) {
+	defer func() { err = singleLineError(err) }()
 	c, err := newComputeUtil(d)
 	if err != nil {
 		return err

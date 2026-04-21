@@ -689,6 +689,49 @@ func unwrapGoogleError(err error) error {
 	return err
 }
 
+// singleLineError returns an error whose Error() string contains no embedded
+// newlines. It is applied at the driver's public method boundary so errors
+// reaching the CLI (and in turn line-oriented log consumers such as
+// gitlab-runner's docker-machine stderr pump) surface as a single log record.
+//
+// For *googleapi.Error the upstream Error() implementation pretty-prints the
+// Details field via json.Encoder.SetIndent, producing a multi-line message.
+// We format a compact equivalent that preserves the information operators
+// actually need (HTTP code, message, reason tags) and drops the indented
+// Details block. For any other error we collapse embedded CR/LF characters.
+func singleLineError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if gerr, ok := err.(*googleapi.Error); ok {
+		msg := fmt.Sprintf("googleapi: Error %d: %s", gerr.Code, flattenNewlines(gerr.Message))
+		if len(gerr.Errors) > 0 {
+			reasons := make([]string, 0, len(gerr.Errors))
+			for _, e := range gerr.Errors {
+				if e.Reason != "" {
+					reasons = append(reasons, e.Reason)
+				}
+			}
+			if len(reasons) > 0 {
+				msg = msg + ", " + strings.Join(reasons, ", ")
+			}
+		}
+		return errors.New(msg)
+	}
+	s := err.Error()
+	if !strings.ContainsAny(s, "\r\n") {
+		return err
+	}
+	return errors.New(flattenNewlines(s))
+}
+
+func flattenNewlines(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return s
+}
+
 func isNotFound(err error) bool {
 	googleErr, ok := err.(*googleapi.Error)
 	if !ok {

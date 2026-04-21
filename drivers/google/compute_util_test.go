@@ -526,3 +526,77 @@ func TestAccelerator(t *testing.T) {
 		})
 	}
 }
+
+func TestSingleLineError(t *testing.T) {
+	// A pretty-printed googleapi.Error emulating what .Error() produces for a
+	// quota-exceeded response (indented Details block via
+	// json.Encoder.SetIndent). See google.golang.org/api/googleapi.Error.
+	quotaErr := &googleapi.Error{
+		Code:    403,
+		Message: "Quota exceeded for quota metric 'Write requests' and limit 'Write requests per minute per region' of service 'compute.googleapis.com'.",
+		Details: []interface{}{
+			map[string]interface{}{
+				"@type":  "type.googleapis.com/google.rpc.ErrorInfo",
+				"domain": "googleapis.com",
+				"reason": "RATE_LIMIT_EXCEEDED",
+			},
+		},
+		Errors: []googleapi.ErrorItem{
+			{Reason: "rateLimitExceeded", Message: "ignored"},
+		},
+	}
+
+	tests := map[string]struct {
+		in      error
+		want    string
+		wantNil bool
+	}{
+		"nil": {
+			in:      nil,
+			wantNil: true,
+		},
+		"plain single-line": {
+			in:   errors.New("boom"),
+			want: "boom",
+		},
+		"plain multi-line": {
+			in:   errors.New("line one\nline two\r\nline three"),
+			want: "line one line two line three",
+		},
+		"googleapi with Details and Errors": {
+			in:   quotaErr,
+			want: "googleapi: Error 403: Quota exceeded for quota metric 'Write requests' and limit 'Write requests per minute per region' of service 'compute.googleapis.com'., rateLimitExceeded",
+		},
+		"googleapi with newline in Message": {
+			in:   &googleapi.Error{Code: 500, Message: "first\nsecond"},
+			want: "googleapi: Error 500: first second",
+		},
+		"googleapi without Errors": {
+			in:   &googleapi.Error{Code: 404, Message: "not found"},
+			want: "googleapi: Error 404: not found",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := singleLineError(tt.in)
+			if tt.wantNil {
+				assert.Nil(t, got)
+				return
+			}
+			if assert.NotNil(t, got) {
+				assert.Equal(t, tt.want, got.Error())
+				assert.NotContains(t, got.Error(), "\n", "must not contain embedded newlines")
+				assert.NotContains(t, got.Error(), "\r", "must not contain embedded carriage returns")
+			}
+		})
+	}
+
+	// Sanity check: the upstream .Error() really does produce multi-line output,
+	// confirming that singleLineError is necessary. If upstream ever stops
+	// doing this, this test will surface it and we can consider removing the
+	// wrapper.
+	t.Run("upstream googleapi.Error is multi-line", func(t *testing.T) {
+		assert.Contains(t, quotaErr.Error(), "\n", "googleapi.Error.Error() used to pretty-print Details across lines; if this no longer holds, singleLineError may be unnecessary")
+	})
+}
