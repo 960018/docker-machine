@@ -183,17 +183,15 @@ func (c *ComputeUtil) resolveInstanceZoneFromRegionalMIG() (string, error) {
 // zoneFromInstanceURL parses the zone segment from a compute self-link of
 // the form ".../zones/<zone>/instances/<name>".
 func zoneFromInstanceURL(url string) (string, error) {
-	const marker = "/zones/"
-	idx := strings.Index(url, marker)
-	if idx == -1 {
-		return "", fmt.Errorf("no %q segment in instance URL %q", marker, url)
+	_, afterZones, ok := strings.Cut(url, "/zones/")
+	if !ok {
+		return "", fmt.Errorf("instance URL %q has no /zones/ segment", url)
 	}
-	rest := url[idx+len(marker):]
-	end := strings.Index(rest, "/")
-	if end == -1 {
-		return "", fmt.Errorf("malformed instance URL %q (no path component after zone)", url)
+	zone, _, ok := strings.Cut(afterZones, "/")
+	if !ok {
+		return "", fmt.Errorf("instance URL %q is truncated after /zones/", url)
 	}
-	return rest[:end], nil
+	return zone, nil
 }
 
 // deleteInstanceViaMIG removes the instance through the MIG so targetSize
