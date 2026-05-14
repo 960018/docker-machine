@@ -18,9 +18,14 @@ package google
 // machine-family fallback hidden inside that one call.
 //
 // Scope of the prototype:
-//   - Zonal MIG only (--google-instance-group-manager). Regional MIGs need
-//     the RegionInstanceGroupManagers service + zone discovery from the
-//     operation response; layered later if the prototype proves out.
+//   - Zonal MIG (--google-instance-group-manager) and regional MIG
+//     (--google-region-instance-group-manager + --google-region) are
+//     supported. Regional MIGs require an extra step after create: the
+//     zone the MIG placed the instance in is unknown until we list managed
+//     instances and parse it out of the instance URL. We then mutate
+//     c.zone (and the underlying Driver.Zone) so subsequent per-instance
+//     operations (SetTags, SetMetadata, eventually Delete after a Driver
+//     reload from disk) target the right zone.
 //   - We trust the operator to leave any MIG-side autoscaler disabled.
 //     CreateInstances / DeleteInstances implicitly bump and decrement
 //     targetSize; a co-resident autoscaler would fight docker-machine.
@@ -30,6 +35,8 @@ package google
 
 import (
 	"fmt"
+	"path"
+	"strings"
 
 	"github.com/docker/machine/libmachine/log"
 	raw "google.golang.org/api/compute/v1"
@@ -38,10 +45,18 @@ import (
 // createInstanceViaMIG asks the configured MIG to provision an instance with
 // the docker-machine-assigned name, waits for the operation to settle, then
 // hands off to the existing post-create configuration (firewall tag, SSH key
-// upload).
+// upload). Dispatches between the zonal and regional MIG flavours.
 func (c *ComputeUtil) createInstanceViaMIG(d *Driver) error {
-	log.Infof("Creating instance via Managed Instance Group %q", c.instanceGroupManager)
 	c.warnAboutIgnoredFlagsInMIGMode(d)
+
+	if c.usesRegionalMIG() {
+		return c.createInstanceViaRegionalMIG(d)
+	}
+	return c.createInstanceViaZonalMIG(d)
+}
+
+func (c *ComputeUtil) createInstanceViaZonalMIG(d *Driver) error {
+	log.Infof("Creating instance via zonal Managed Instance Group %q", c.instanceGroupManager)
 
 	req := &raw.InstanceGroupManagersCreateInstancesRequest{
 		Instances: []*raw.PerInstanceConfig{
@@ -61,8 +76,50 @@ func (c *ComputeUtil) createInstanceViaMIG(d *Driver) error {
 		return fmt.Errorf("MIG %q create for %q did not complete: %w", c.instanceGroupManager, c.instanceName, err)
 	}
 
-	// At this point the MIG has scheduled instance creation; the VM exists.
-	// Fall through to the same post-create steps the direct path runs.
+	return c.finishPostCreate(d)
+}
+
+func (c *ComputeUtil) createInstanceViaRegionalMIG(d *Driver) error {
+	log.Infof("Creating instance via regional Managed Instance Group %q in %q", c.regionInstanceGroupManager, c.region())
+
+	req := &raw.RegionInstanceGroupManagersCreateInstancesRequest{
+		Instances: []*raw.PerInstanceConfig{
+			{Name: c.instanceName},
+		},
+	}
+
+	op, err := c.service.RegionInstanceGroupManagers.
+		CreateInstances(c.project, c.region(), c.regionInstanceGroupManager, req).
+		Do()
+	if err != nil {
+		return fmt.Errorf("regional MIG %q rejected create for %q: %w", c.regionInstanceGroupManager, c.instanceName, err)
+	}
+
+	log.Infof("Waiting for regional MIG create operation %s", op.Name)
+	if err := c.waitForRegionOp(op.Name); err != nil {
+		return fmt.Errorf("regional MIG %q create for %q did not complete: %w", c.regionInstanceGroupManager, c.instanceName, err)
+	}
+
+	// Discover which zone the regional MIG placed the instance in. After
+	// this returns, c.zone is populated and the existing per-instance API
+	// surface (Get / SetTags / SetMetadata / Delete) targets the right
+	// zone. We also persist this on the Driver so subsequent invocations
+	// (Remove, GetState, etc.) read it back from disk after the
+	// docker-machine state is reloaded.
+	zone, err := c.resolveInstanceZoneFromRegionalMIG()
+	if err != nil {
+		return fmt.Errorf("discovering zone for MIG-placed instance %q: %w", c.instanceName, err)
+	}
+	c.zone = zone
+	d.Zone = zone
+
+	return c.finishPostCreate(d)
+}
+
+// finishPostCreate runs the create-time work that's identical between the
+// direct path and any MIG flavour: look the instance up, add the firewall
+// tag, push the SSH public key.
+func (c *ComputeUtil) finishPostCreate(d *Driver) error {
 	instance, err := c.instance()
 	if err != nil {
 		return fmt.Errorf("looking up just-created MIG instance %q: %w", c.instanceName, err)
@@ -75,12 +132,65 @@ func (c *ComputeUtil) createInstanceViaMIG(d *Driver) error {
 	return c.uploadSSHKey(instance, d.GetSSHKeyPath())
 }
 
+// resolveInstanceZoneFromRegionalMIG lists the regional MIG's managed
+// instances, finds the one matching c.instanceName, and parses the zone out
+// of its self-link.
+//
+// Regional MIGs return an operation from CreateInstances that resolves to
+// the *MIG-level* action, not the per-instance placement. The placement
+// itself is only observable by inspecting the resulting managed instance,
+// whose `instance` field looks like
+//   https://www.googleapis.com/compute/v1/projects/P/zones/us-east1-c/instances/N
+// We extract the segment between "/zones/" and the next "/".
+func (c *ComputeUtil) resolveInstanceZoneFromRegionalMIG() (string, error) {
+	resp, err := c.service.RegionInstanceGroupManagers.
+		ListManagedInstances(c.project, c.region(), c.regionInstanceGroupManager).
+		Do()
+	if err != nil {
+		return "", fmt.Errorf("listing managed instances in regional MIG %q: %w", c.regionInstanceGroupManager, err)
+	}
+	for _, mi := range resp.ManagedInstances {
+		if path.Base(mi.Instance) != c.instanceName {
+			continue
+		}
+		zone, err := zoneFromInstanceURL(mi.Instance)
+		if err != nil {
+			return "", err
+		}
+		return zone, nil
+	}
+	return "", fmt.Errorf("instance %q not found in regional MIG %q after create (the operation completed but ListManagedInstances did not return it)", c.instanceName, c.regionInstanceGroupManager)
+}
+
+// zoneFromInstanceURL parses the zone segment from a compute self-link of
+// the form ".../zones/<zone>/instances/<name>".
+func zoneFromInstanceURL(url string) (string, error) {
+	const marker = "/zones/"
+	idx := strings.Index(url, marker)
+	if idx == -1 {
+		return "", fmt.Errorf("no %q segment in instance URL %q", marker, url)
+	}
+	rest := url[idx+len(marker):]
+	end := strings.Index(rest, "/")
+	if end == -1 {
+		return "", fmt.Errorf("malformed instance URL %q (no path component after zone)", url)
+	}
+	return rest[:end], nil
+}
+
 // deleteInstanceViaMIG removes the instance through the MIG so targetSize
 // and per-instance configs are kept consistent. Boot disks are owned by the
 // MIG's template, so the caller's subsequent deleteDisk() lookup will find
-// nothing and become a no-op.
+// nothing and become a no-op. Dispatches between zonal and regional.
 func (c *ComputeUtil) deleteInstanceViaMIG() error {
-	log.Infof("Deleting instance via Managed Instance Group %q", c.instanceGroupManager)
+	if c.usesRegionalMIG() {
+		return c.deleteInstanceViaRegionalMIG()
+	}
+	return c.deleteInstanceViaZonalMIG()
+}
+
+func (c *ComputeUtil) deleteInstanceViaZonalMIG() error {
+	log.Infof("Deleting instance via zonal Managed Instance Group %q", c.instanceGroupManager)
 
 	instanceURL := fmt.Sprintf("zones/%s/instances/%s", c.zone, c.instanceName)
 	req := &raw.InstanceGroupManagersDeleteInstancesRequest{
@@ -99,6 +209,41 @@ func (c *ComputeUtil) deleteInstanceViaMIG() error {
 	return c.waitForRegionalOp(op.Name)
 }
 
+func (c *ComputeUtil) deleteInstanceViaRegionalMIG() error {
+	log.Infof("Deleting instance via regional Managed Instance Group %q in %q", c.regionInstanceGroupManager, c.region())
+
+	// We need the zone to build the instance self-link in the delete
+	// request. On the Create path we cached it on the Driver (and thus on
+	// c.zone via newComputeUtil); on a fresh invocation that read the
+	// Driver back from disk, c.zone is populated from the persisted
+	// Driver.Zone. If for some reason it isn't (e.g. an interrupted
+	// create), fall back to looking it up via ListManagedInstances.
+	zone := c.zone
+	if zone == "" {
+		discovered, err := c.resolveInstanceZoneFromRegionalMIG()
+		if err != nil {
+			return fmt.Errorf("discovering zone before regional MIG delete: %w", err)
+		}
+		zone = discovered
+	}
+
+	instanceURL := fmt.Sprintf("zones/%s/instances/%s", zone, c.instanceName)
+	req := &raw.RegionInstanceGroupManagersDeleteInstancesRequest{
+		Instances:                      []string{instanceURL},
+		SkipInstancesOnValidationError: true,
+	}
+
+	op, err := c.service.RegionInstanceGroupManagers.
+		DeleteInstances(c.project, c.region(), c.regionInstanceGroupManager, req).
+		Do()
+	if err != nil {
+		return fmt.Errorf("regional MIG %q rejected delete for %q: %w", c.regionInstanceGroupManager, c.instanceName, err)
+	}
+
+	log.Infof("Waiting for regional MIG delete operation %s", op.Name)
+	return c.waitForRegionOp(op.Name)
+}
+
 // warnAboutIgnoredFlagsInMIGMode walks the driver flags that the instance
 // template overrides and logs a single warning per non-default value. The
 // goal is to make migration friction visible — operators copying a working
@@ -109,20 +254,29 @@ func (c *ComputeUtil) deleteInstanceViaMIG() error {
 // is clearer.
 func (c *ComputeUtil) warnAboutIgnoredFlagsInMIGMode(d *Driver) {
 	ignored := map[string]bool{
-		"google-machine-type":    d.MachineType != "" && d.MachineType != defaultMachineType,
-		"google-machine-image":   d.MachineImage != "" && d.MachineImage != defaultImageName,
-		"google-disk-size":       d.DiskSize != defaultDiskSize,
-		"google-disk-type":       d.DiskType != "" && d.DiskType != defaultDiskType,
-		"google-network":         d.Network != "" && d.Network != defaultNetwork,
-		"google-subnetwork":      d.Subnetwork != "",
+		"google-machine-type":     d.MachineType != "" && d.MachineType != defaultMachineType,
+		"google-machine-image":    d.MachineImage != "" && d.MachineImage != defaultImageName,
+		"google-disk-size":        d.DiskSize != defaultDiskSize,
+		"google-disk-type":        d.DiskType != "" && d.DiskType != defaultDiskType,
+		"google-network":          d.Network != "" && d.Network != defaultNetwork,
+		"google-subnetwork":       d.Subnetwork != "",
 		"google-min-cpu-platform": d.MinCPUPlatform != "",
-		"google-accelerator":     d.Accelerator != "",
-		"google-preemptible":     d.Preemptible,
-		"google-service-account": d.ServiceAccount != "" && d.ServiceAccount != defaultServiceAccount,
+		"google-accelerator":      d.Accelerator != "",
+		"google-preemptible":      d.Preemptible,
+		"google-service-account":  d.ServiceAccount != "" && d.ServiceAccount != defaultServiceAccount,
+	}
+	// Regional MIG places its own zone; the operator-supplied --google-zone
+	// would conflict. Warn so the configuration error surfaces.
+	if d.usesRegionalMIG() && d.Zone != "" && d.Zone != defaultZone {
+		ignored["google-zone"] = true
+	}
+	migName := c.instanceGroupManager
+	if c.usesRegionalMIG() {
+		migName = c.regionInstanceGroupManager
 	}
 	for flag, set := range ignored {
 		if set {
-			log.Warnf("Flag --%s is ignored in MIG mode; the MIG %q's instance template owns this setting", flag, c.instanceGroupManager)
+			log.Warnf("Flag --%s is ignored in MIG mode; the MIG %q's instance template owns this setting", flag, migName)
 		}
 	}
 }

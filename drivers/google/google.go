@@ -84,6 +84,23 @@ type Driver struct {
 	// ourselves, while keeping docker-machine as the autoscaler.
 	InstanceGroupManager string
 
+	// RegionInstanceGroupManager is the regional counterpart of
+	// InstanceGroupManager. The MIG itself spans multiple zones in a
+	// region; CreateInstances picks a zone at create time based on the
+	// MIG's distribution policy and (for Flex MIG) machine-family
+	// availability. Mutually exclusive with InstanceGroupManager.
+	//
+	// Region must be set when this is. The eventual zone is discovered
+	// from ListManagedInstances post-create and stored on the Driver so
+	// subsequent lifecycle operations (Stop / Start / Remove) target the
+	// correct zone after the docker-machine state is reloaded from disk.
+	RegionInstanceGroupManager string
+
+	// Region is the GCP region for regional MIG mode. Ignored otherwise
+	// (zonal modes derive region from zone by stripping the trailing
+	// "-<zoneletter>" suffix).
+	Region string
+
 	OperationBackoffFactory *backoffFactory
 }
 
@@ -288,6 +305,16 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "(Experimental) Name of a zonal Managed Instance Group to provision instances through. When set, the MIG's instance template owns machine type / disk / network / image; flags configuring those are ignored. Required for Flex MIG support.",
 			EnvVar: "GOOGLE_INSTANCE_GROUP_MANAGER",
 		},
+		mcnflag.StringFlag{
+			Name:   "google-region-instance-group-manager",
+			Usage:  "(Experimental) Name of a regional Managed Instance Group to provision instances through. Like --google-instance-group-manager but the MIG spans a region; requires --google-region. Mutually exclusive with --google-instance-group-manager.",
+			EnvVar: "GOOGLE_REGION_INSTANCE_GROUP_MANAGER",
+		},
+		mcnflag.StringFlag{
+			Name:   "google-region",
+			Usage:  "GCP region for regional MIG mode. Ignored in zonal modes (region is derived from --google-zone).",
+			EnvVar: "GOOGLE_REGION",
+		},
 	}
 }
 
@@ -378,6 +405,15 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.SetSwarmConfigFromFlags(flags)
 
 	d.InstanceGroupManager = flags.String("google-instance-group-manager")
+	d.RegionInstanceGroupManager = flags.String("google-region-instance-group-manager")
+	d.Region = flags.String("google-region")
+
+	if d.InstanceGroupManager != "" && d.RegionInstanceGroupManager != "" {
+		return errors.New("--google-instance-group-manager and --google-region-instance-group-manager are mutually exclusive: pick one provisioning channel")
+	}
+	if d.RegionInstanceGroupManager != "" && d.Region == "" {
+		return errors.New("--google-region-instance-group-manager requires --google-region")
+	}
 
 	backoffRandomizationFactor, err := strconv.ParseFloat(flags.String("google-operation-backoff-randomization-factor"), 64)
 	if err != nil {
@@ -447,11 +483,18 @@ func (d *Driver) PreCreateCheck() error {
 }
 
 // usesMIG reports whether the driver was configured to provision via a
-// Managed Instance Group rather than direct Instances.Insert calls. Helper
-// so callers can stay readable as more MIG variants (regional, etc.) get
-// added.
+// Managed Instance Group rather than direct Instances.Insert calls — either
+// zonal or regional.
 func (d *Driver) usesMIG() bool {
-	return d.InstanceGroupManager != ""
+	return d.InstanceGroupManager != "" || d.RegionInstanceGroupManager != ""
+}
+
+// usesRegionalMIG reports whether the driver is in regional-MIG mode
+// specifically. Zonal MIGs use a different API service and don't need the
+// post-create zone discovery dance, so this gate keeps those code paths
+// distinct.
+func (d *Driver) usesRegionalMIG() bool {
+	return d.RegionInstanceGroupManager != ""
 }
 
 // Create creates a GCE VM instance acting as a docker host.

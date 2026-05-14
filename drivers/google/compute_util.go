@@ -53,6 +53,16 @@ type ComputeUtil struct {
 	// Instances.Insert / Instances.Delete path.
 	instanceGroupManager string
 
+	// regionInstanceGroupManager mirrors Driver.RegionInstanceGroupManager.
+	// When non-empty, provisioning happens against the regional MIG service.
+	regionInstanceGroupManager string
+
+	// regionExplicit holds an operator-supplied region (Driver.Region).
+	// Used by region() when zone is empty, i.e. regional-MIG mode pre-zone-
+	// discovery. Named with the "Explicit" suffix because region() is
+	// already a method on this type.
+	regionExplicit string
+
 	operationBackoffFactory *backoffFactory
 }
 
@@ -112,14 +122,21 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		accelerator:             driver.Accelerator,
 		maintenancePolicy:       driver.MaintenancePolicy,
 		skipFirewall:            driver.SkipFirewall,
-		instanceGroupManager:    driver.InstanceGroupManager,
+		instanceGroupManager:       driver.InstanceGroupManager,
+		regionInstanceGroupManager: driver.RegionInstanceGroupManager,
+		regionExplicit:             driver.Region,
 	}, nil
 }
 
 // usesMIG mirrors Driver.usesMIG so ComputeUtil callers (which don't always
 // hold a driver reference) can dispatch on provisioning mode.
 func (c *ComputeUtil) usesMIG() bool {
-	return c.instanceGroupManager != ""
+	return c.instanceGroupManager != "" || c.regionInstanceGroupManager != ""
+}
+
+// usesRegionalMIG mirrors Driver.usesRegionalMIG.
+func (c *ComputeUtil) usesRegionalMIG() bool {
+	return c.regionInstanceGroupManager != ""
 }
 
 func (c *ComputeUtil) acceleratorCountAndType() (int, string) {
@@ -210,7 +227,14 @@ func (c *ComputeUtil) staticAddress() (string, error) {
 	return externalAddress.Address, nil
 }
 
+// region returns the GCP region this ComputeUtil targets. In regional-MIG
+// mode the operator supplies it explicitly (zone is unknown pre-create);
+// otherwise it's derived from zone by stripping the trailing "-<letter>"
+// (e.g. us-east1-c -> us-east1).
 func (c *ComputeUtil) region() string {
+	if c.regionExplicit != "" {
+		return c.regionExplicit
+	}
 	return c.zone[:len(c.zone)-2]
 }
 
@@ -697,9 +721,23 @@ func (c *ComputeUtil) waitForOp(opGetter func() (*raw.Operation, error)) error {
 }
 
 // waitForRegionalOp waits for the regional operation to finish.
+//
+// Historical naming: this waits for ZoneOperations despite its name. It
+// pre-dates regional-MIG support and renaming it would touch every caller.
+// For true region-scoped operations (regional MIG create/delete) use
+// waitForRegionOp below.
 func (c *ComputeUtil) waitForRegionalOp(name string) error {
 	return c.waitForOp(func() (*raw.Operation, error) {
 		return c.service.ZoneOperations.Wait(c.project, c.zone, name).Do()
+	})
+}
+
+// waitForRegionOp waits for an actually-regional operation (one issued
+// against RegionInstanceGroupManagers etc.). Distinct from waitForRegionalOp
+// because that one polls ZoneOperations under a misleading name.
+func (c *ComputeUtil) waitForRegionOp(name string) error {
+	return c.waitForOp(func() (*raw.Operation, error) {
+		return c.service.RegionOperations.Wait(c.project, c.region(), name).Do()
 	})
 }
 

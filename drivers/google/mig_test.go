@@ -37,8 +37,226 @@ func TestUsesMIG_DefaultsToFalse(t *testing.T) {
 	// guard against future struct-init changes.
 	d := &Driver{}
 	assert.False(t, d.usesMIG())
+	assert.False(t, d.usesRegionalMIG())
 	c := &ComputeUtil{}
 	assert.False(t, c.usesMIG())
+	assert.False(t, c.usesRegionalMIG())
+}
+
+func TestSetConfigFromFlags_RegionalMIG(t *testing.T) {
+	driver := NewDriver("", "")
+	checkFlags := &drivers.CheckDriverOptions{
+		FlagsValues: map[string]interface{}{
+			"google-project":                       "PROJECT",
+			"google-region-instance-group-manager": "my-regional-mig",
+			"google-region":                        "us-east1",
+		},
+		CreateFlags: driver.GetCreateFlags(),
+	}
+
+	require.NoError(t, driver.SetConfigFromFlags(checkFlags))
+	assert.Empty(t, checkFlags.InvalidFlags)
+	assert.Equal(t, "my-regional-mig", driver.RegionInstanceGroupManager)
+	assert.Equal(t, "us-east1", driver.Region)
+	assert.True(t, driver.usesMIG())
+	assert.True(t, driver.usesRegionalMIG())
+}
+
+func TestSetConfigFromFlags_RegionalMIGRequiresRegion(t *testing.T) {
+	// Regional MIGs need the region to issue API calls and to compute the
+	// instance self-link. Omitting --google-region is a config error worth
+	// surfacing before any job tries to run.
+	driver := NewDriver("", "")
+	checkFlags := &drivers.CheckDriverOptions{
+		FlagsValues: map[string]interface{}{
+			"google-project":                       "PROJECT",
+			"google-region-instance-group-manager": "my-regional-mig",
+		},
+		CreateFlags: driver.GetCreateFlags(),
+	}
+
+	err := driver.SetConfigFromFlags(checkFlags)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires --google-region")
+}
+
+func TestSetConfigFromFlags_ZonalAndRegionalMIGAreMutuallyExclusive(t *testing.T) {
+	driver := NewDriver("", "")
+	checkFlags := &drivers.CheckDriverOptions{
+		FlagsValues: map[string]interface{}{
+			"google-project":                       "PROJECT",
+			"google-instance-group-manager":        "zonal",
+			"google-region-instance-group-manager": "regional",
+			"google-region":                        "us-east1",
+		},
+		CreateFlags: driver.GetCreateFlags(),
+	}
+
+	err := driver.SetConfigFromFlags(checkFlags)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
+func TestRegion_PrefersExplicitOverDerivedFromZone(t *testing.T) {
+	// In regional MIG mode, zone is empty until post-create discovery; the
+	// derive-from-zone fallback would panic. Verify the explicit region
+	// takes precedence and the fallback still works for zonal mode.
+	c := &ComputeUtil{regionExplicit: "europe-west4"}
+	assert.Equal(t, "europe-west4", c.region())
+
+	c = &ComputeUtil{zone: "us-east1-c"}
+	assert.Equal(t, "us-east1", c.region())
+}
+
+func TestZoneFromInstanceURL(t *testing.T) {
+	tests := map[string]struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		"standard self-link": {
+			input: "https://www.googleapis.com/compute/v1/projects/p/zones/us-east1-c/instances/foo",
+			want:  "us-east1-c",
+		},
+		"relative form": {
+			input: "projects/p/zones/europe-west4-a/instances/bar",
+			want:  "europe-west4-a",
+		},
+		"no zones segment": {
+			input:   "projects/p/regions/us-east1/instances/x",
+			wantErr: true,
+		},
+		"malformed (truncated after zone)": {
+			input:   "https://www.googleapis.com/compute/v1/projects/p/zones/us-east1-c",
+			wantErr: true,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := zoneFromInstanceURL(tt.input)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func newComputeUtilForRegionalTest(t *testing.T, endpoint, region, mig string) *ComputeUtil {
+	t.Helper()
+	svc, err := raw.NewService(context.Background(), option.WithoutAuthentication(), option.WithEndpoint(endpoint))
+	require.NoError(t, err)
+	return &ComputeUtil{
+		// zone deliberately empty: regional MIG mode discovers it post-create.
+		instanceName:               "test-instance-abc",
+		project:                    "test-project",
+		service:                    svc,
+		regionExplicit:             region,
+		regionInstanceGroupManager: mig,
+		operationBackoffFactory:    testBackoffFactory(),
+	}
+}
+
+func TestCreateInstanceViaRegionalMIG_IssuesCreateAndDiscoversZone(t *testing.T) {
+	// Verifies the regional happy path through the point where zone
+	// discovery completes:
+	//   1. POST .../regions/us-east1/instanceGroupManagers/<mig>/createInstances
+	//   2. Wait on a region operation
+	//   3. ListManagedInstances on the regional MIG to find our instance
+	//   4. Look the instance up via Instances.Get in the discovered zone
+	// We short-circuit at step 4 with a 500 so we don't have to mock the
+	// firewall-tag / SSH-metadata downstream, which is shared code path
+	// already exercised in other tests.
+	srv, recorded := newMIGTestServer(t, func(w http.ResponseWriter, r *http.Request, _ *[]recordedRequest) {
+		switch {
+		case strings.Contains(r.URL.Path, "/regions/us-east1/instanceGroupManagers/my-rmig/createInstances"):
+			respondJSON(t, w, &raw.Operation{Name: "op-rcreate-1", Status: "PENDING"})
+		case strings.Contains(r.URL.Path, "/regions/us-east1/operations/op-rcreate-1/wait"):
+			respondJSON(t, w, &raw.Operation{Name: "op-rcreate-1", Status: "DONE"})
+		case strings.Contains(r.URL.Path, "/regions/us-east1/instanceGroupManagers/my-rmig/listManagedInstances"):
+			respondJSON(t, w, &raw.RegionInstanceGroupManagersListInstancesResponse{
+				ManagedInstances: []*raw.ManagedInstance{{
+					Instance: "https://www.googleapis.com/compute/v1/projects/test-project/zones/us-east1-d/instances/test-instance-abc",
+				}},
+			})
+		case strings.Contains(r.URL.Path, "/zones/us-east1-d/instances/test-instance-abc"):
+			// short-circuit downstream post-create steps
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	defer srv.Close()
+
+	c := newComputeUtilForRegionalTest(t, srv.URL, "us-east1", "my-rmig")
+	d := &Driver{Region: "us-east1", RegionInstanceGroupManager: "my-rmig"}
+
+	err := c.createInstanceViaMIG(d)
+	require.Error(t, err, "expected short-circuit error from the post-discovery Instances.Get")
+
+	// Zone discovery must have updated both ComputeUtil and Driver state so
+	// later lifecycle operations target the right zone.
+	assert.Equal(t, "us-east1-d", c.zone, "ComputeUtil zone must reflect MIG placement")
+	assert.Equal(t, "us-east1-d", d.Zone, "Driver.Zone must persist the discovered zone")
+
+	var sawCreate, sawWait, sawList bool
+	for _, r := range *recorded {
+		switch {
+		case r.method == "POST" && strings.HasSuffix(r.path, "/regions/us-east1/instanceGroupManagers/my-rmig/createInstances"):
+			sawCreate = true
+			var req raw.RegionInstanceGroupManagersCreateInstancesRequest
+			require.NoError(t, json.Unmarshal([]byte(r.body), &req))
+			require.Len(t, req.Instances, 1)
+			assert.Equal(t, "test-instance-abc", req.Instances[0].Name)
+		case strings.Contains(r.path, "/regions/us-east1/operations/op-rcreate-1/wait"):
+			sawWait = true
+		case strings.Contains(r.path, "/regions/us-east1/instanceGroupManagers/my-rmig/listManagedInstances"):
+			sawList = true
+		}
+	}
+	assert.True(t, sawCreate, "regional createInstances was not called")
+	assert.True(t, sawWait, "regional operations.wait was not called")
+	assert.True(t, sawList, "listManagedInstances was not called for zone discovery")
+}
+
+func TestDeleteInstanceViaRegionalMIG_IssuesRegionalDelete(t *testing.T) {
+	srv, recorded := newMIGTestServer(t, func(w http.ResponseWriter, r *http.Request, _ *[]recordedRequest) {
+		switch {
+		case strings.Contains(r.URL.Path, "/regions/us-east1/instanceGroupManagers/my-rmig/deleteInstances"):
+			respondJSON(t, w, &raw.Operation{Name: "op-rdel-1", Status: "PENDING"})
+		case strings.Contains(r.URL.Path, "/regions/us-east1/operations/op-rdel-1/wait"):
+			respondJSON(t, w, &raw.Operation{Name: "op-rdel-1", Status: "DONE"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	defer srv.Close()
+
+	c := newComputeUtilForRegionalTest(t, srv.URL, "us-east1", "my-rmig")
+	// Simulate the post-create state: zone has already been resolved and
+	// persisted (this is what newComputeUtil reads back from Driver.Zone
+	// on the next docker-machine invocation).
+	c.zone = "us-east1-d"
+
+	require.NoError(t, c.deleteInstanceViaMIG())
+
+	var sawDelete bool
+	for _, r := range *recorded {
+		if r.method == "POST" && strings.HasSuffix(r.path, "/regions/us-east1/instanceGroupManagers/my-rmig/deleteInstances") {
+			sawDelete = true
+			var req raw.RegionInstanceGroupManagersDeleteInstancesRequest
+			require.NoError(t, json.Unmarshal([]byte(r.body), &req))
+			require.Len(t, req.Instances, 1)
+			assert.Contains(t, req.Instances[0], "zones/us-east1-d/instances/test-instance-abc",
+				"regional delete must reference the instance by its discovered zonal URL")
+			assert.True(t, req.SkipInstancesOnValidationError)
+		}
+	}
+	assert.True(t, sawDelete, "regional deleteInstances was not called")
 }
 
 // migTestServer returns an httptest server that handles whichever MIG / op /
