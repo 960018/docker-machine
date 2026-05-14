@@ -47,6 +47,12 @@ type ComputeUtil struct {
 	maintenancePolicy string
 	skipFirewall      bool
 
+	// instanceGroupManager mirrors Driver.InstanceGroupManager. Non-empty
+	// means provisioning happens via InstanceGroupManagers.CreateInstances
+	// (and deletion via DeleteInstances) rather than the direct
+	// Instances.Insert / Instances.Delete path.
+	instanceGroupManager string
+
 	operationBackoffFactory *backoffFactory
 }
 
@@ -106,7 +112,14 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		accelerator:             driver.Accelerator,
 		maintenancePolicy:       driver.MaintenancePolicy,
 		skipFirewall:            driver.SkipFirewall,
+		instanceGroupManager:    driver.InstanceGroupManager,
 	}, nil
+}
+
+// usesMIG mirrors Driver.usesMIG so ComputeUtil callers (which don't always
+// hold a driver reference) can dispatch on provisioning mode.
+func (c *ComputeUtil) usesMIG() bool {
+	return c.instanceGroupManager != ""
 }
 
 func (c *ComputeUtil) acceleratorCountAndType() (int, string) {
@@ -312,8 +325,17 @@ func (c *ComputeUtil) instance() (*raw.Instance, error) {
 	return c.service.Instances.Get(c.project, c.zone, c.instanceName).Do()
 }
 
-// createInstance creates a GCE VM instance.
+// createInstance creates a GCE VM instance, either directly via
+// Instances.Insert or, when the driver is configured with a Managed
+// Instance Group, via InstanceGroupManagers.CreateInstances. The MIG path
+// is the gateway to Flex MIG, where the instance template carries a
+// precedence list of machine families and GCP selects the first available
+// one per create. See Driver.usesMIG.
 func (c *ComputeUtil) createInstance(d *Driver) error {
+	if d.usesMIG() {
+		return c.createInstanceViaMIG(d)
+	}
+
 	log.Infof("Creating instance")
 
 	var net string
@@ -597,7 +619,16 @@ func parseLabels(d *Driver) map[string]string {
 }
 
 // deleteInstance deletes the instance, leaving the persistent disk.
+//
+// In MIG mode we call InstanceGroupManagers.DeleteInstances instead so the
+// MIG's bookkeeping (targetSize, per-instance configs) stays consistent.
+// Boot disks are managed by the MIG itself in that mode, so deleteDisk
+// becomes a no-op via the existing nil-safe lookup.
 func (c *ComputeUtil) deleteInstance() error {
+	if c.usesMIG() {
+		return c.deleteInstanceViaMIG()
+	}
+
 	log.Infof("Deleting instance.")
 	op, err := c.service.Instances.Delete(c.project, c.zone, c.instanceName).Do()
 	if err != nil {

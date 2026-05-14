@@ -67,6 +67,23 @@ type Driver struct {
 	MaintenancePolicy     string
 	SkipFirewall          bool
 
+	// InstanceGroupManager, when non-empty, switches the create/delete path
+	// to provision via a zonal Managed Instance Group rather than calling
+	// Instances.Insert directly. The MIG's instance template owns the
+	// machine type, boot disk, network, image, labels, etc., so flags that
+	// configure those are silently ignored in MIG mode and a warning is
+	// logged. Per-instance metadata (SSH keys) still flows through
+	// SetMetadata after creation; the rest of the lifecycle (Stop / Start /
+	// Restart / Kill / GetIP / GetState) is unchanged because it operates
+	// on the instance regardless of how it was provisioned.
+	//
+	// The motivating use case is Flex MIG: the template declares a
+	// precedence list of machine families, and GCP's MIG scheduler picks
+	// the first available one on each create. That gives us per-create
+	// machine-family spillover without implementing the retry loop
+	// ourselves, while keeping docker-machine as the autoscaler.
+	InstanceGroupManager string
+
 	OperationBackoffFactory *backoffFactory
 }
 
@@ -266,6 +283,11 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "Skip firewall setup",
 			EnvVar: "GOOGLE_SKIP_FIREWALL_CREATE",
 		},
+		mcnflag.StringFlag{
+			Name:   "google-instance-group-manager",
+			Usage:  "(Experimental) Name of a zonal Managed Instance Group to provision instances through. When set, the MIG's instance template owns machine type / disk / network / image; flags configuring those are ignored. Required for Flex MIG support.",
+			EnvVar: "GOOGLE_INSTANCE_GROUP_MANAGER",
+		},
 	}
 }
 
@@ -355,6 +377,8 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.SSHPort = 22
 	d.SetSwarmConfigFromFlags(flags)
 
+	d.InstanceGroupManager = flags.String("google-instance-group-manager")
+
 	backoffRandomizationFactor, err := strconv.ParseFloat(flags.String("google-operation-backoff-randomization-factor"), 64)
 	if err != nil {
 		return fmt.Errorf("error while parsing google-operation-backoff-randomization-factor value: %v", err)
@@ -420,6 +444,14 @@ func (d *Driver) PreCreateCheck() error {
 	}
 
 	return nil
+}
+
+// usesMIG reports whether the driver was configured to provision via a
+// Managed Instance Group rather than direct Instances.Insert calls. Helper
+// so callers can stay readable as more MIG variants (regional, etc.) get
+// added.
+func (d *Driver) usesMIG() bool {
+	return d.InstanceGroupManager != ""
 }
 
 // Create creates a GCE VM instance acting as a docker host.
