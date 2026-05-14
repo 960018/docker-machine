@@ -100,12 +100,21 @@ func (c *ComputeUtil) createInstanceViaRegionalMIG(d *Driver) error {
 		return fmt.Errorf("regional MIG %q create for %q did not complete: %w", c.regionInstanceGroupManager, c.instanceName, err)
 	}
 
-	// Discover which zone the regional MIG placed the instance in. After
-	// this returns, c.zone is populated and the existing per-instance API
-	// surface (Get / SetTags / SetMetadata / Delete) targets the right
-	// zone. We also persist this on the Driver so subsequent invocations
-	// (Remove, GetState, etc.) read it back from disk after the
-	// docker-machine state is reloaded.
+	// Discover which zone the regional MIG placed the instance in. The
+	// CreateInstances Operation returned above is region-scoped and its
+	// TargetLink points at the MIG, not the instance, so there's no
+	// placement info in the response. ListManagedInstances is the
+	// after-the-fact lookup; an OperationGroupId-filtered RegionOperations
+	// list would also work and is more targeted, but at MIG sizes we
+	// expect the cost is a wash.
+	//
+	// c.zone is set so the rest of *this* call (finishPostCreate →
+	// instance() / addFirewallTag / uploadSSHKey) targets the right zone.
+	// d.Zone is set so libmachine's Filestore.Save persists it across the
+	// process boundary — every docker-machine subcommand is a fresh
+	// process that constructs ComputeUtil from the on-disk Driver state,
+	// so subsequent invocations (rm, ip, status, …) read the discovered
+	// zone back from disk and don't need to re-resolve.
 	zone, err := c.resolveInstanceZoneFromRegionalMIG()
 	if err != nil {
 		return fmt.Errorf("discovering zone for MIG-placed instance %q: %w", c.instanceName, err)
@@ -213,11 +222,12 @@ func (c *ComputeUtil) deleteInstanceViaRegionalMIG() error {
 	log.Infof("Deleting instance via regional Managed Instance Group %q in %q", c.regionInstanceGroupManager, c.region())
 
 	// We need the zone to build the instance self-link in the delete
-	// request. On the Create path we cached it on the Driver (and thus on
-	// c.zone via newComputeUtil); on a fresh invocation that read the
-	// Driver back from disk, c.zone is populated from the persisted
-	// Driver.Zone. If for some reason it isn't (e.g. an interrupted
-	// create), fall back to looking it up via ListManagedInstances.
+	// request. On the Create path we wrote the discovered zone to
+	// Driver.Zone; libmachine persisted that to disk, and this fresh
+	// invocation read it back into c.zone via newComputeUtil. If for some
+	// reason the persisted state was lost (interrupted create, manual
+	// cleanup of config.json, …), fall back to a fresh
+	// ListManagedInstances lookup.
 	zone := c.zone
 	if zone == "" {
 		discovered, err := c.resolveInstanceZoneFromRegionalMIG()
