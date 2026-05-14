@@ -170,17 +170,14 @@ func (c *ComputeUtil) resolveInstanceZoneFromRegionalMIG() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("listManagedInstances lookup for %q in MIG %q: %w", c.instanceName, c.regionInstanceGroupManager, err)
 	}
-	for _, mi := range resp.ManagedInstances {
-		// The Instance field is the full self-link, e.g.
-		//   https://.../projects/P/zones/us-east1-c/instances/<name>
-		// Extract the zone segment. Defensive name check in case the
-		// filter ever drifts and lets through a partial match.
-		if !strings.HasSuffix(mi.Instance, "/instances/"+c.instanceName) {
-			continue
-		}
-		return zoneFromInstanceURL(mi.Instance)
+	if len(resp.ManagedInstances) == 0 {
+		return "", fmt.Errorf("instance %q not found in regional MIG %q after create (the operation completed but ListManagedInstances did not return it)", c.instanceName, c.regionInstanceGroupManager)
 	}
-	return "", fmt.Errorf("instance %q not found in regional MIG %q after create (the operation completed but ListManagedInstances did not return it)", c.instanceName, c.regionInstanceGroupManager)
+	// Server-side filter narrows to instances whose name equals ours; the
+	// Instance field is the full self-link
+	// (https://.../zones/<zone>/instances/<name>) and zoneFromInstanceURL
+	// pulls out the zone segment.
+	return zoneFromInstanceURL(resp.ManagedInstances[0].Instance)
 }
 
 // zoneFromInstanceURL parses the zone segment from a compute self-link of
