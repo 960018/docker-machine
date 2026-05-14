@@ -164,7 +164,7 @@ func TestCreateInstanceViaRegionalMIG_IssuesCreateAndDiscoversZone(t *testing.T)
 	// discovery completes:
 	//   1. POST .../regions/us-east1/instanceGroupManagers/<mig>/createInstances
 	//   2. Wait on a region operation
-	//   3. ListManagedInstances on the regional MIG to find our instance
+	//   3. Instances.aggregatedList?filter=name=<x> to find our instance's zone
 	//   4. Look the instance up via Instances.Get in the discovered zone
 	// We short-circuit at step 4 with a 500 so we don't have to mock the
 	// firewall-tag / SSH-metadata downstream, which is shared code path
@@ -175,11 +175,22 @@ func TestCreateInstanceViaRegionalMIG_IssuesCreateAndDiscoversZone(t *testing.T)
 			respondJSON(t, w, &raw.Operation{Name: "op-rcreate-1", Status: "PENDING"})
 		case strings.Contains(r.URL.Path, "/regions/us-east1/operations/op-rcreate-1/wait"):
 			respondJSON(t, w, &raw.Operation{Name: "op-rcreate-1", Status: "DONE"})
-		case strings.Contains(r.URL.Path, "/regions/us-east1/instanceGroupManagers/my-rmig/listManagedInstances"):
-			respondJSON(t, w, &raw.RegionInstanceGroupManagersListInstancesResponse{
-				ManagedInstances: []*raw.ManagedInstance{{
-					Instance: "https://www.googleapis.com/compute/v1/projects/test-project/zones/us-east1-d/instances/test-instance-abc",
-				}},
+		case strings.Contains(r.URL.Path, "/aggregated/instances"):
+			// Validate the filter and region prefix client-side check
+			// by returning entries in both our region (one match) and a
+			// different region (would-be cross-region collision). The
+			// client must pick the one in us-east1.
+			respondJSON(t, w, &raw.InstanceAggregatedList{
+				Items: map[string]raw.InstancesScopedList{
+					"zones/us-east1-d": {
+						Instances: []*raw.Instance{{Name: "test-instance-abc"}},
+					},
+					"zones/us-central1-a": {
+						// Same name in a different region — must NOT
+						// be selected. Defends the region prefix gate.
+						Instances: []*raw.Instance{{Name: "test-instance-abc"}},
+					},
+				},
 			})
 		case strings.Contains(r.URL.Path, "/zones/us-east1-d/instances/test-instance-abc"):
 			// short-circuit downstream post-create steps
@@ -197,12 +208,13 @@ func TestCreateInstanceViaRegionalMIG_IssuesCreateAndDiscoversZone(t *testing.T)
 	err := c.createInstanceViaMIG(d)
 	require.Error(t, err, "expected short-circuit error from the post-discovery Instances.Get")
 
-	// Zone discovery must have updated both ComputeUtil and Driver state so
-	// later lifecycle operations target the right zone.
-	assert.Equal(t, "us-east1-d", c.zone, "ComputeUtil zone must reflect MIG placement")
+	// Zone discovery must have picked the in-region zone, not the
+	// cross-region collision, and updated both ComputeUtil and Driver.
+	assert.Equal(t, "us-east1-d", c.zone, "ComputeUtil zone must reflect MIG placement in the configured region")
 	assert.Equal(t, "us-east1-d", d.Zone, "Driver.Zone must persist the discovered zone")
 
-	var sawCreate, sawWait, sawList bool
+	var sawCreate, sawWait, sawAggregatedList bool
+	var aggregatedListQuery string
 	for _, r := range *recorded {
 		switch {
 		case r.method == "POST" && strings.HasSuffix(r.path, "/regions/us-east1/instanceGroupManagers/my-rmig/createInstances"):
@@ -213,13 +225,16 @@ func TestCreateInstanceViaRegionalMIG_IssuesCreateAndDiscoversZone(t *testing.T)
 			assert.Equal(t, "test-instance-abc", req.Instances[0].Name)
 		case strings.Contains(r.path, "/regions/us-east1/operations/op-rcreate-1/wait"):
 			sawWait = true
-		case strings.Contains(r.path, "/regions/us-east1/instanceGroupManagers/my-rmig/listManagedInstances"):
-			sawList = true
+		case strings.Contains(r.path, "/aggregated/instances"):
+			sawAggregatedList = true
+			aggregatedListQuery = r.rawQuery
 		}
 	}
 	assert.True(t, sawCreate, "regional createInstances was not called")
 	assert.True(t, sawWait, "regional operations.wait was not called")
-	assert.True(t, sawList, "listManagedInstances was not called for zone discovery")
+	assert.True(t, sawAggregatedList, "aggregatedList was not called for zone discovery")
+	assert.Contains(t, aggregatedListQuery, "filter=name%3Dtest-instance-abc",
+		"aggregatedList must include a name filter so the response stays bounded under quota")
 }
 
 func TestDeleteInstanceViaRegionalMIG_IssuesRegionalDelete(t *testing.T) {
@@ -264,9 +279,10 @@ func TestDeleteInstanceViaRegionalMIG_IssuesRegionalDelete(t *testing.T) {
 // recording every path that came in. Handlers respond with DONE operations
 // where applicable so the wait-for-op loop terminates quickly.
 type recordedRequest struct {
-	method string
-	path   string
-	body   string
+	method   string
+	path     string
+	rawQuery string
+	body     string
 }
 
 func newMIGTestServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Request, recorded *[]recordedRequest)) (*httptest.Server, *[]recordedRequest) {
@@ -274,7 +290,7 @@ func newMIGTestServer(t *testing.T, handler func(w http.ResponseWriter, r *http.
 	var recorded []recordedRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		recorded = append(recorded, recordedRequest{r.Method, r.URL.Path, string(body)})
+		recorded = append(recorded, recordedRequest{r.Method, r.URL.Path, r.URL.RawQuery, string(body)})
 		handler(w, r, &recorded)
 	}))
 	return srv, &recorded
