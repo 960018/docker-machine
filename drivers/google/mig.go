@@ -145,46 +145,42 @@ func (c *ComputeUtil) finishPostCreate(d *Driver) error {
 // returned Operation is region-scoped and its TargetLink points at the
 // MIG, not the spawned instance.
 //
-// Uses Instances.aggregatedList with a name filter rather than the MIG's
-// ListManagedInstances. Both work, but ListManagedInstances returns the
-// MIG's entire instance set — at gitlab.com scale that's hundreds of
-// entries per response, called once per Create, against the GCE read
-// quota for the project. aggregatedList?filter=name=<x> returns at most
-// one instance per zone and is the standard idiom for "find this
-// instance across the project".
+// Uses ListManagedInstances with a server-side filter (`name eq "..."`).
+// Two things to know about this endpoint:
 //
-// Instance names within a project aren't globally unique across zones —
-// GCE only enforces uniqueness per zone, so technically you can have two
-// same-named instances in different zones of the same project. We
-// defend against picking the wrong one by constraining the response to
-// zones that belong to our MIG's region (zoneKey prefix match). The
-// server-side filter still narrows the response set; the prefix check
-// is belt-and-braces in case someone (re-)used a similar name in a
-// different region's pool.
+//   - The filter runs server-side, so the response is bounded to the
+//     matches regardless of MIG size. Critical at our scale: without it
+//     the endpoint returns the MIG's full instance set in a single
+//     response (the default listManagedInstancesResults setting is
+//     PAGELESS, which disables maxResults/pageToken pagination — so on
+//     a default MIG you'd be pulling hundreds of entries per create
+//     just to find one zone string).
+//   - It's a POST despite being a "list". Easy footgun for hand-rolled
+//     HTTP; the Go SDK handles the method correctly so nothing to do
+//     here beyond know it.
+//
+// Scope-wise this is naturally tighter than aggregatedList: a regional
+// MIG belongs to exactly one region, so there's no cross-region name-
+// collision concern to defend against client-side.
 func (c *ComputeUtil) resolveInstanceZoneFromRegionalMIG() (string, error) {
-	resp, err := c.service.Instances.
-		AggregatedList(c.project).
-		Filter(fmt.Sprintf("name=%s", c.instanceName)).
+	resp, err := c.service.RegionInstanceGroupManagers.
+		ListManagedInstances(c.project, c.region(), c.regionInstanceGroupManager).
+		Filter(fmt.Sprintf("name eq %q", c.instanceName)).
 		Do()
 	if err != nil {
-		return "", fmt.Errorf("aggregatedList lookup for %q: %w", c.instanceName, err)
+		return "", fmt.Errorf("listManagedInstances lookup for %q in MIG %q: %w", c.instanceName, c.regionInstanceGroupManager, err)
 	}
-	// Only accept zone keys whose zone belongs to our MIG's region.
-	// AggregatedList keys look like "zones/us-east1-c"; a zone is in our
-	// region when it starts with "zones/<region>-".
-	regionPrefix := "zones/" + c.region() + "-"
-	for zoneKey, scoped := range resp.Items {
-		if !strings.HasPrefix(zoneKey, regionPrefix) {
+	for _, mi := range resp.ManagedInstances {
+		// The Instance field is the full self-link, e.g.
+		//   https://.../projects/P/zones/us-east1-c/instances/<name>
+		// Extract the zone segment. Defensive name check in case the
+		// filter ever drifts and lets through a partial match.
+		if !strings.HasSuffix(mi.Instance, "/instances/"+c.instanceName) {
 			continue
 		}
-		for _, inst := range scoped.Instances {
-			if inst.Name != c.instanceName {
-				continue
-			}
-			return strings.TrimPrefix(zoneKey, "zones/"), nil
-		}
+		return zoneFromInstanceURL(mi.Instance)
 	}
-	return "", fmt.Errorf("instance %q not found in region %q via aggregatedList after regional MIG create (the operation completed but the instance is not yet visible in any %s zone)", c.instanceName, c.region(), c.region())
+	return "", fmt.Errorf("instance %q not found in regional MIG %q after create (the operation completed but ListManagedInstances did not return it)", c.instanceName, c.regionInstanceGroupManager)
 }
 
 // zoneFromInstanceURL parses the zone segment from a compute self-link of
