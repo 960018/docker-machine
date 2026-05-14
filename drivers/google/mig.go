@@ -35,11 +35,17 @@ package google
 
 import (
 	"fmt"
-	"strings"
+	"net/url"
+	"regexp"
 
 	"github.com/docker/machine/libmachine/log"
 	raw "google.golang.org/api/compute/v1"
 )
+
+// zonePathSegment matches the "/zones/<zone>/" segment of a GCE self-link
+// path. Precompiled at package init so zoneFromInstanceURL doesn't pay the
+// compile cost per call.
+var zonePathSegment = regexp.MustCompile(`/zones/([^/]+)/`)
 
 // createInstanceViaMIG asks the configured MIG to provision an instance with
 // the docker-machine-assigned name, waits for the operation to settle, then
@@ -181,17 +187,19 @@ func (c *ComputeUtil) resolveInstanceZoneFromRegionalMIG() (string, error) {
 }
 
 // zoneFromInstanceURL parses the zone segment from a compute self-link of
-// the form ".../zones/<zone>/instances/<name>".
-func zoneFromInstanceURL(url string) (string, error) {
-	_, afterZones, ok := strings.Cut(url, "/zones/")
-	if !ok {
-		return "", fmt.Errorf("instance URL %q has no /zones/ segment", url)
+// the form ".../zones/<zone>/instances/<name>". Parses with net/url first
+// so genuinely-malformed input fails fast rather than slipping past
+// substring matching, then pulls the zone via a tight regex on the path.
+func zoneFromInstanceURL(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("instance URL %q: %w", rawURL, err)
 	}
-	zone, _, ok := strings.Cut(afterZones, "/")
-	if !ok {
-		return "", fmt.Errorf("instance URL %q is truncated after /zones/", url)
+	m := zonePathSegment.FindStringSubmatch(u.Path)
+	if m == nil {
+		return "", fmt.Errorf("instance URL %q has no /zones/<zone>/ segment in its path", rawURL)
 	}
-	return zone, nil
+	return m[1], nil
 }
 
 // deleteInstanceViaMIG removes the instance through the MIG so targetSize
