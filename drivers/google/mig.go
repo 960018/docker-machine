@@ -149,7 +149,9 @@ func (c *ComputeUtil) finishPostCreate(d *Driver) error {
 // the *MIG-level* action, not the per-instance placement. The placement
 // itself is only observable by inspecting the resulting managed instance,
 // whose `instance` field looks like
-//   https://www.googleapis.com/compute/v1/projects/P/zones/us-east1-c/instances/N
+//
+//	https://www.googleapis.com/compute/v1/projects/P/zones/us-east1-c/instances/N
+//
 // We extract the segment between "/zones/" and the next "/".
 func (c *ComputeUtil) resolveInstanceZoneFromRegionalMIG() (string, error) {
 	resp, err := c.service.RegionInstanceGroupManagers.
