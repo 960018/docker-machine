@@ -127,9 +127,12 @@ func TestZoneFromInstanceURL(t *testing.T) {
 			input:   "projects/p/regions/us-east1/instances/x",
 			wantErr: true,
 		},
-		"malformed (truncated after zone)": {
-			input:   "https://www.googleapis.com/compute/v1/projects/p/zones/us-east1-c",
-			wantErr: true,
+		"zone self-link (no /instances/ suffix)": {
+			// Valid: this is the form Instance.Zone takes in the
+			// Instances.Get response. zoneFromInstanceURL is also
+			// used to parse those, not just instance self-links.
+			input: "https://www.googleapis.com/compute/v1/projects/p/zones/us-east1-c",
+			want:  "us-east1-c",
 		},
 	}
 	for name, tt := range tests {
@@ -205,8 +208,11 @@ func TestCreateInstanceViaRegionalMIG_IssuesCreateAndDiscoversZone(t *testing.T)
 	require.Error(t, err, "expected short-circuit error from the post-discovery Instances.Get")
 
 	// Zone discovery must have updated both ComputeUtil and Driver state.
+	// Driver.Zone retains operator intent (empty here, since no flag);
+	// Driver.ResolvedZone carries the post-create-discovered placement.
 	assert.Equal(t, "us-east1-d", c.zone, "ComputeUtil zone must reflect MIG placement")
-	assert.Equal(t, "us-east1-d", d.Zone, "Driver.Zone must persist the discovered zone")
+	assert.Empty(t, d.Zone, "Driver.Zone must retain operator intent, not be overwritten by discovery")
+	assert.Equal(t, "us-east1-d", d.ResolvedZone, "Driver.ResolvedZone must persist the discovered zone")
 
 	var sawCreate, sawWait, sawList bool
 	var listQuery string
@@ -299,6 +305,88 @@ func TestCreateInstanceViaRegionalMIG_WaitsForCurrentActionNone(t *testing.T) {
 		"listManagedInstances must be polled at least twice: once seeing CREATING, then again seeing NONE")
 	assert.Equal(t, "us-east1-c", c.zone,
 		"zone discovery happens off the same listManagedInstances response that confirms stability")
+}
+
+func TestSyncDriverStateFromInstance_PopulatesResolvedFields(t *testing.T) {
+	// Exercises the post-create discovery that gitlab-runner!6740 relies
+	// on for the target_machine_type metric label. The instance returned
+	// from Instances.Get carries both Zone and MachineType as full
+	// self-link URLs; syncDriverStateFromInstance parses both and writes
+	// to the Resolved* fields, leaving the operator-intent Zone /
+	// MachineType untouched.
+	d := &Driver{
+		Zone:        "us-central1-a",  // operator intent: flag default
+		MachineType: "n1-standard-1",  // operator intent: flag default
+	}
+	c := &ComputeUtil{}
+	c.syncDriverStateFromInstance(d, &raw.Instance{
+		Zone:        "https://www.googleapis.com/compute/v1/projects/test-project/zones/us-east1-c",
+		MachineType: "https://www.googleapis.com/compute/v1/projects/test-project/zones/us-east1-c/machineTypes/n2-standard-2",
+	})
+
+	assert.Equal(t, "us-central1-a", d.Zone, "operator-intent Zone must not be overwritten")
+	assert.Equal(t, "n1-standard-1", d.MachineType, "operator-intent MachineType must not be overwritten")
+	assert.Equal(t, "us-east1-c", d.ResolvedZone, "ResolvedZone must reflect the actual instance placement")
+	assert.Equal(t, "n2-standard-2", d.ResolvedMachineType, "ResolvedMachineType must reflect what GCP provisioned")
+	assert.Equal(t, "us-east1-c", c.zone, "ComputeUtil zone must also be updated for in-flight reuse")
+}
+
+func TestEffectiveZone(t *testing.T) {
+	// Pinpoints the fallback logic newComputeUtil relies on so a fresh
+	// ComputeUtil (constructed from on-disk Driver state on a subsequent
+	// docker-machine invocation) targets the resolved zone, not the
+	// operator-default us-central1-a.
+	cases := []struct {
+		name string
+		d    *Driver
+		want string
+	}{
+		{"only operator zone", &Driver{Zone: "us-central1-a"}, "us-central1-a"},
+		{"resolved present, operator default", &Driver{Zone: "us-central1-a", ResolvedZone: "us-east1-c"}, "us-east1-c"},
+		{"resolved present, operator explicit", &Driver{Zone: "us-east1-b", ResolvedZone: "us-east1-c"}, "us-east1-c"},
+		{"both empty", &Driver{}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, effectiveZone(tc.d))
+		})
+	}
+}
+
+func TestMachineTypeFromInstanceURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		url     string
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "well-formed",
+			url:  "https://www.googleapis.com/compute/v1/projects/p/zones/z/machineTypes/n2-standard-2",
+			want: "n2-standard-2",
+		},
+		{
+			name:    "missing machineTypes segment",
+			url:     "https://www.googleapis.com/compute/v1/projects/p/zones/z/instances/foo",
+			wantErr: true,
+		},
+		{
+			name:    "garbage URL",
+			url:     "://",
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := machineTypeFromInstanceURL(tc.url)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 func TestDeleteInstanceViaRegionalMIG_IssuesRegionalDelete(t *testing.T) {

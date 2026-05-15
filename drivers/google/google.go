@@ -101,6 +101,27 @@ type Driver struct {
 	// "-<zoneletter>" suffix).
 	Region string
 
+	// ResolvedZone and ResolvedMachineType carry post-create-discovered
+	// values from Instances.Get, populated by syncDriverStateFromInstance
+	// during finishPostCreate. Empty outside MIG mode.
+	//
+	// Why both exist alongside Zone / MachineType:
+	//   - Zone / MachineType retain operator intent (flag value or
+	//     default). For non-MIG callers they're authoritative.
+	//   - Under MIG mode the MIG (or Flex policy) owns placement and the
+	//     operator's flag values are ignored. Resolved* carries reality.
+	//
+	// Consumers:
+	//   - ComputeUtil construction prefers ResolvedZone over Zone, so
+	//     subsequent operations (Remove, Stop, GetIP, …) target the
+	//     right zone after a regional-MIG create even when --google-zone
+	//     wasn't supplied.
+	//   - gitlab-runner!6740 reads ResolvedMachineType for the
+	//     target_machine_type metric label, falling back to MachineType
+	//     for non-MIG callers where the two are the same.
+	ResolvedZone        string
+	ResolvedMachineType string
+
 	OperationBackoffFactory *backoffFactory
 }
 

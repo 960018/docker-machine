@@ -45,10 +45,14 @@ import (
 	raw "google.golang.org/api/compute/v1"
 )
 
-// zonePathSegment matches the "/zones/<zone>/" segment of a GCE self-link
-// path. Precompiled at package init so zoneFromInstanceURL doesn't pay the
+// zonePathSegment matches the "/zones/<zone>" segment of a GCE
+// self-link path. The trailing slash is optional so the same regex
+// matches both:
+//   - Instance self-links: ".../zones/<zone>/instances/<name>"
+//   - Zone self-links:     ".../zones/<zone>"
+// Precompiled at package init so zoneFromInstanceURL doesn't pay the
 // compile cost per call.
-var zonePathSegment = regexp.MustCompile(`/zones/([^/]+)/`)
+var zonePathSegment = regexp.MustCompile(`/zones/([^/]+)`)
 
 // createInstanceViaMIG asks the configured MIG to provision an instance with
 // the docker-machine-assigned name, waits for the operation to settle, then
@@ -131,11 +135,12 @@ func (c *ComputeUtil) createInstanceViaRegionalMIG(d *Driver) error {
 	//
 	// c.zone is set so the rest of *this* call (finishPostCreate →
 	// instance() / addFirewallTag / uploadSSHKey) targets the right zone.
-	// d.Zone is set so libmachine's Filestore.Save persists it across the
-	// process boundary — every docker-machine subcommand is a fresh
-	// process that constructs ComputeUtil from the on-disk Driver state,
-	// so subsequent invocations (rm, ip, status, …) read the discovered
-	// zone back from disk and don't need to re-resolve.
+	// d.ResolvedZone is set so libmachine's Filestore.Save persists it
+	// across the process boundary — every docker-machine subcommand is a
+	// fresh process that constructs ComputeUtil from the on-disk Driver
+	// state, so subsequent invocations (rm, ip, status, …) read the
+	// discovered zone back from disk via the ResolvedZone-aware fallback
+	// in newComputeUtil.
 	mi, err := c.waitForRegionalMIGInstanceReady()
 	if err != nil {
 		return fmt.Errorf("waiting for MIG-placed instance %q to be ready: %w", c.instanceName, err)
@@ -145,25 +150,79 @@ func (c *ComputeUtil) createInstanceViaRegionalMIG(d *Driver) error {
 		return fmt.Errorf("discovering zone for MIG-placed instance %q: %w", c.instanceName, err)
 	}
 	c.zone = zone
-	d.Zone = zone
+	d.ResolvedZone = zone
 
 	return c.finishPostCreate(d)
 }
 
 // finishPostCreate runs the create-time work that's identical between the
-// direct path and any MIG flavour: look the instance up, add the firewall
-// tag, push the SSH public key.
+// direct path and any MIG flavour: look the instance up, sync the
+// discovered placement back into Driver state so libmachine persists it,
+// add the firewall tag, push the SSH public key.
 func (c *ComputeUtil) finishPostCreate(d *Driver) error {
 	instance, err := c.instance()
 	if err != nil {
 		return fmt.Errorf("looking up just-created MIG instance %q: %w", c.instanceName, err)
 	}
 
+	// The MIG (and Flex MIG in particular) owns the machine-type and
+	// zone placement; the operator's --google-* flags are ignored. Write
+	// the actual values back to Driver so they get persisted to
+	// config.json and metric labels downstream (gitlab-runner!6740's
+	// target_machine_type / target_zone) reflect reality rather than
+	// the operator's input.
+	c.syncDriverStateFromInstance(d, instance)
+
 	if err := c.addFirewallTag(instance); err != nil {
 		return fmt.Errorf("adding firewall tag to MIG instance %q: %w", c.instanceName, err)
 	}
 
 	return c.uploadSSHKey(instance, d.GetSSHKeyPath())
+}
+
+// syncDriverStateFromInstance populates Driver.ResolvedZone and
+// Driver.ResolvedMachineType from a just-created instance. Called after
+// a successful create from a MIG path so the resolved values get
+// persisted by libmachine alongside the operator-intent Zone /
+// MachineType fields.
+//
+// Best-effort: parsing failures log and leave the field empty rather
+// than blocking post-create. The empty case (no resolved value) is
+// handled by ComputeUtil's zone fallback (ResolvedZone || Zone) and
+// by gitlab-runner!6740 (ResolvedMachineType || MachineType).
+func (c *ComputeUtil) syncDriverStateFromInstance(d *Driver, instance *raw.Instance) {
+	if instance == nil {
+		return
+	}
+	if mt, err := machineTypeFromInstanceURL(instance.MachineType); err == nil {
+		d.ResolvedMachineType = mt
+	} else {
+		log.Warnf("could not parse machine type from instance URL %q: %s", instance.MachineType, err)
+	}
+	if zone, err := zoneFromInstanceURL(instance.Zone); err == nil {
+		d.ResolvedZone = zone
+		c.zone = zone
+	} else {
+		log.Warnf("could not parse zone from instance URL %q: %s", instance.Zone, err)
+	}
+}
+
+// machineTypeFromInstanceURL parses the machine-type segment from a
+// compute self-link of the form ".../machineTypes/<type>". Same shape as
+// zoneFromInstanceURL: net/url for fail-fast validation, regex for the
+// segment extraction.
+var machineTypePathSegment = regexp.MustCompile(`/machineTypes/([^/]+)$`)
+
+func machineTypeFromInstanceURL(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("machine-type URL %q: %w", rawURL, err)
+	}
+	m := machineTypePathSegment.FindStringSubmatch(u.Path)
+	if m == nil {
+		return "", fmt.Errorf("machine-type URL %q has no /machineTypes/<type> segment", rawURL)
+	}
+	return m[1], nil
 }
 
 // waitForZonalMIGInstanceReady polls ListManagedInstances on the zonal

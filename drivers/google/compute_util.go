@@ -78,6 +78,20 @@ var (
 	networkProjectRegex = regexp.MustCompile(apiURL + `(?P<project_name>[^/]+)/global/networks/(?P<network_name>[A-Za-z-]+)`)
 )
 
+// effectiveZone picks the zone to target for compute API calls,
+// preferring the post-create-discovered Driver.ResolvedZone when one is
+// on file. Subsequent docker-machine invocations on a MIG-created VM
+// (Remove, Stop, GetIP, …) reconstruct ComputeUtil from on-disk
+// Driver state and need to target the resolved zone, not the
+// operator-supplied flag value. Returns the operator value when
+// ResolvedZone is empty (non-MIG callers or pre-discovery state).
+func effectiveZone(d *Driver) string {
+	if d.ResolvedZone != "" {
+		return d.ResolvedZone
+	}
+	return d.Zone
+}
+
 // NewComputeUtil creates and initializes a ComputeUtil.
 func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 	client, err := google.DefaultClient(oauth2.NoContext, raw.ComputeScope)
@@ -98,8 +112,10 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		networkProject = matches[1]
 	}
 
+	zone := effectiveZone(driver)
+
 	return &ComputeUtil{
-		zone:                       driver.Zone,
+		zone:                       zone,
 		instanceName:               driver.MachineName,
 		userName:                   driver.SSHUser,
 		project:                    driver.Project,
@@ -112,7 +128,7 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		useInternalIP:              driver.UseInternalIP,
 		useInternalIPOnly:          driver.UseInternalIPOnly,
 		service:                    service,
-		zoneURL:                    apiURL + driver.Project + "/zones/" + driver.Zone,
+		zoneURL:                    apiURL + driver.Project + "/zones/" + zone,
 		globalURL:                  apiURL + driver.Project + "/global",
 		SwarmMaster:                driver.SwarmMaster,
 		SwarmHost:                  driver.SwarmHost,
