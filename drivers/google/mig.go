@@ -34,10 +34,13 @@ package google
 //     configs.
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
+	"time"
 
+	"github.com/cenkalti/backoff"
 	"github.com/docker/machine/libmachine/log"
 	raw "google.golang.org/api/compute/v1"
 )
@@ -81,6 +84,14 @@ func (c *ComputeUtil) createInstanceViaZonalMIG(d *Driver) error {
 		return fmt.Errorf("MIG %q create for %q did not complete: %w", c.instanceGroupManager, c.instanceName, err)
 	}
 
+	// The Operation completing only signals that the MIG accepted the
+	// request and started provisioning; the VM is not yet visible to
+	// Instances.Get. Wait for the MIG to mark the instance stable
+	// (CurrentAction == "NONE") before finishPostCreate's lookups race.
+	if _, err := c.waitForZonalMIGInstanceReady(); err != nil {
+		return fmt.Errorf("waiting for MIG-placed instance %q to be ready: %w", c.instanceName, err)
+	}
+
 	return c.finishPostCreate(d)
 }
 
@@ -105,13 +116,18 @@ func (c *ComputeUtil) createInstanceViaRegionalMIG(d *Driver) error {
 		return fmt.Errorf("regional MIG %q create for %q did not complete: %w", c.regionInstanceGroupManager, c.instanceName, err)
 	}
 
-	// Discover which zone the regional MIG placed the instance in. The
-	// CreateInstances Operation returned above is region-scoped and its
-	// TargetLink points at the MIG, not the instance, so there's no
-	// placement info in the response. ListManagedInstances is the
-	// after-the-fact lookup; an OperationGroupId-filtered RegionOperations
-	// list would also work and is more targeted, but at MIG sizes we
-	// expect the cost is a wash.
+	// Two things to do after the region Operation completes:
+	//
+	//   1. Wait for the MIG to mark the instance stable. The Operation
+	//      completing only signals that the MIG accepted the request and
+	//      started provisioning; the VM is not yet visible to Instances.Get,
+	//      so finishPostCreate's lookup races without this wait.
+	//
+	//   2. Discover which zone the regional MIG placed the instance in.
+	//      The Operation's TargetLink points at the MIG, not the instance,
+	//      so there's no placement info in the response. The same
+	//      ListManagedInstances poll that gives us stability gives us the
+	//      instance self-link, from which we pull the zone segment.
 	//
 	// c.zone is set so the rest of *this* call (finishPostCreate →
 	// instance() / addFirewallTag / uploadSSHKey) targets the right zone.
@@ -120,7 +136,11 @@ func (c *ComputeUtil) createInstanceViaRegionalMIG(d *Driver) error {
 	// process that constructs ComputeUtil from the on-disk Driver state,
 	// so subsequent invocations (rm, ip, status, …) read the discovered
 	// zone back from disk and don't need to re-resolve.
-	zone, err := c.resolveInstanceZoneFromRegionalMIG()
+	mi, err := c.waitForRegionalMIGInstanceReady()
+	if err != nil {
+		return fmt.Errorf("waiting for MIG-placed instance %q to be ready: %w", c.instanceName, err)
+	}
+	zone, err := zoneFromInstanceURL(mi.Instance)
 	if err != nil {
 		return fmt.Errorf("discovering zone for MIG-placed instance %q: %w", c.instanceName, err)
 	}
@@ -146,44 +166,123 @@ func (c *ComputeUtil) finishPostCreate(d *Driver) error {
 	return c.uploadSSHKey(instance, d.GetSSHKeyPath())
 }
 
-// resolveInstanceZoneFromRegionalMIG looks up the zone the MIG placed our
-// instance in. The CreateInstances response doesn't carry that — the
-// returned Operation is region-scoped and its TargetLink points at the
-// MIG, not the spawned instance.
+// waitForZonalMIGInstanceReady polls ListManagedInstances on the zonal
+// MIG until the entry for our instance reports CurrentAction == "NONE".
+// See waitForMIGInstanceReady for why this exists.
+func (c *ComputeUtil) waitForZonalMIGInstanceReady() (*raw.ManagedInstance, error) {
+	return c.waitForMIGInstanceReady(c.instanceGroupManager, func() ([]*raw.ManagedInstance, error) {
+		resp, err := c.service.InstanceGroupManagers.
+			ListManagedInstances(c.project, c.zone, c.instanceGroupManager).
+			Filter(fmt.Sprintf("name eq %q", c.instanceName)).
+			Do()
+		if err != nil {
+			return nil, fmt.Errorf("listManagedInstances lookup for %q in zonal MIG %q: %w", c.instanceName, c.instanceGroupManager, err)
+		}
+		return resp.ManagedInstances, nil
+	})
+}
+
+// waitForRegionalMIGInstanceReady polls ListManagedInstances on the
+// regional MIG until the entry for our instance reports CurrentAction ==
+// "NONE", and returns that entry. Callers use the entry's Instance URL
+// to discover the zone the MIG placed the instance in.
 //
-// Uses ListManagedInstances with a server-side filter (`name eq "..."`).
-// Two things to know about this endpoint:
+// Two things to know about this listManagedInstances endpoint:
 //
 //   - The filter runs server-side, so the response is bounded to the
-//     matches regardless of MIG size. Critical at our scale: without it
-//     the endpoint returns the MIG's full instance set in a single
-//     response (the default listManagedInstancesResults setting is
-//     PAGELESS, which disables maxResults/pageToken pagination — so on
-//     a default MIG you'd be pulling hundreds of entries per create
-//     just to find one zone string).
+//     matches regardless of MIG size. Critical at scale: without it the
+//     endpoint returns the MIG's full instance set in a single response
+//     (the default listManagedInstancesResults setting is PAGELESS,
+//     which disables maxResults/pageToken pagination — so on a default
+//     MIG you'd be pulling hundreds of entries per poll iteration just
+//     to find one entry).
 //   - It's a POST despite being a "list". Easy footgun for hand-rolled
-//     HTTP; the Go SDK handles the method correctly so nothing to do
-//     here beyond know it.
+//     HTTP; the Go SDK handles the method correctly.
 //
 // Scope-wise this is naturally tighter than aggregatedList: a regional
 // MIG belongs to exactly one region, so there's no cross-region name-
 // collision concern to defend against client-side.
-func (c *ComputeUtil) resolveInstanceZoneFromRegionalMIG() (string, error) {
+func (c *ComputeUtil) waitForRegionalMIGInstanceReady() (*raw.ManagedInstance, error) {
+	return c.waitForMIGInstanceReady(c.regionInstanceGroupManager, func() ([]*raw.ManagedInstance, error) {
+		resp, err := c.service.RegionInstanceGroupManagers.
+			ListManagedInstances(c.project, c.region(), c.regionInstanceGroupManager).
+			Filter(fmt.Sprintf("name eq %q", c.instanceName)).
+			Do()
+		if err != nil {
+			return nil, fmt.Errorf("listManagedInstances lookup for %q in regional MIG %q: %w", c.instanceName, c.regionInstanceGroupManager, err)
+		}
+		return resp.ManagedInstances, nil
+	})
+}
+
+// lookupInstanceZoneInRegionalMIG does a single ListManagedInstances call
+// to find the zone our instance currently lives in. Used by the delete
+// path as a fallback when the zone wasn't persisted to disk during create
+// (interrupted create, manual state cleanup, etc.). Unlike the create
+// path's waitForRegionalMIGInstanceReady, this does *not* wait for
+// CurrentAction == "NONE": a mid-create or mid-delete instance still
+// has a zone we can target for deletion.
+func (c *ComputeUtil) lookupInstanceZoneInRegionalMIG() (string, error) {
 	resp, err := c.service.RegionInstanceGroupManagers.
 		ListManagedInstances(c.project, c.region(), c.regionInstanceGroupManager).
 		Filter(fmt.Sprintf("name eq %q", c.instanceName)).
 		Do()
 	if err != nil {
-		return "", fmt.Errorf("listManagedInstances lookup for %q in MIG %q: %w", c.instanceName, c.regionInstanceGroupManager, err)
+		return "", fmt.Errorf("listManagedInstances lookup for %q in regional MIG %q: %w", c.instanceName, c.regionInstanceGroupManager, err)
 	}
 	if len(resp.ManagedInstances) == 0 {
-		return "", fmt.Errorf("instance %q not found in regional MIG %q after create (the operation completed but ListManagedInstances did not return it)", c.instanceName, c.regionInstanceGroupManager)
+		return "", fmt.Errorf("instance %q not found in regional MIG %q", c.instanceName, c.regionInstanceGroupManager)
 	}
-	// Server-side filter narrows to instances whose name equals ours; the
-	// Instance field is the full self-link
-	// (https://.../zones/<zone>/instances/<name>) and zoneFromInstanceURL
-	// pulls out the zone segment.
 	return zoneFromInstanceURL(resp.ManagedInstances[0].Instance)
+}
+
+// waitForMIGInstanceReady polls a MIG's listManagedInstances endpoint
+// until the entry for our instance has CurrentAction == "NONE", meaning
+// the underlying VM is fully provisioned and reliably visible to
+// Instances.Get.
+//
+// The Operation returned by CreateInstances completing only signals that
+// the MIG has accepted the request and started provisioning; the VM in
+// compute.zones.instances is not yet visible. Without this wait the
+// synchronous post-create steps (Instances.Get, SetTags for firewall,
+// SetMetadata for SSH key) race against an in-flight create and 404.
+//
+// fleeting-plugin-googlecloud avoids this race by design: its Increase
+// just fires CreateInstances and returns, and instance state is
+// discovered asynchronously in periodic Update() ticks. docker-machine's
+// CLI shape forces a synchronous create+configure+return flow per
+// invocation, so we poll here instead.
+//
+// Reuses operationBackoffFactory so the wait shape (1s → 30s, 5min cap
+// by default, all tunable via the --google-operation-backoff-* flags)
+// matches the existing wait-for-operation behaviour.
+func (c *ComputeUtil) waitForMIGInstanceReady(mig string, list func() ([]*raw.ManagedInstance, error)) (*raw.ManagedInstance, error) {
+	if c.operationBackoffFactory == nil {
+		return nil, errors.New("operationBackoffFactory is not defined")
+	}
+	b := c.operationBackoffFactory.create()
+	b.Reset()
+
+	for {
+		instances, err := list()
+		if err != nil {
+			return nil, err
+		}
+		if len(instances) == 0 {
+			return nil, fmt.Errorf("instance %q not found in MIG %q after create (the operation completed but listManagedInstances did not return it)", c.instanceName, mig)
+		}
+		mi := instances[0]
+		if mi.CurrentAction == "NONE" {
+			return mi, nil
+		}
+		log.Debugf("waiting for MIG instance %q (currentAction=%s, instanceStatus=%s)", c.instanceName, mi.CurrentAction, mi.InstanceStatus)
+
+		next := b.NextBackOff()
+		if next == backoff.Stop {
+			return nil, fmt.Errorf("MIG instance %q in %q did not reach a stable state (last currentAction=%q) within backoff", c.instanceName, mig, mi.CurrentAction)
+		}
+		time.Sleep(next)
+	}
 }
 
 // zoneFromInstanceURL parses the zone segment from a compute self-link of
@@ -245,7 +344,10 @@ func (c *ComputeUtil) deleteInstanceViaRegionalMIG() error {
 	// ListManagedInstances lookup.
 	zone := c.zone
 	if zone == "" {
-		discovered, err := c.resolveInstanceZoneFromRegionalMIG()
+		// One-shot lookup; we don't want to block on CurrentAction == NONE
+		// because the instance may already be mid-delete or in a failed
+		// state, and we just need its zone to build the delete URL.
+		discovered, err := c.lookupInstanceZoneInRegionalMIG()
 		if err != nil {
 			return fmt.Errorf("discovering zone before regional MIG delete: %w", err)
 		}

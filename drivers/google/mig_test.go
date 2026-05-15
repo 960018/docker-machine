@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docker/machine/libmachine/drivers"
 	"github.com/stretchr/testify/assert"
@@ -178,9 +179,13 @@ func TestCreateInstanceViaRegionalMIG_IssuesCreateAndDiscoversZone(t *testing.T)
 		case strings.Contains(r.URL.Path, "/regions/us-east1/operations/op-rcreate-1/wait"):
 			respondJSON(t, w, &raw.Operation{Name: "op-rcreate-1", Status: "DONE"})
 		case strings.Contains(r.URL.Path, "/regions/us-east1/instanceGroupManagers/my-rmig/listManagedInstances"):
+			// CurrentAction "NONE" means the underlying VM is fully
+			// provisioned. The create path will not call Instances.Get
+			// until this is the case; see waitForMIGInstanceReady.
 			respondJSON(t, w, &raw.RegionInstanceGroupManagersListInstancesResponse{
 				ManagedInstances: []*raw.ManagedInstance{{
-					Instance: "https://www.googleapis.com/compute/v1/projects/test-project/zones/us-east1-d/instances/test-instance-abc",
+					Instance:      "https://www.googleapis.com/compute/v1/projects/test-project/zones/us-east1-d/instances/test-instance-abc",
+					CurrentAction: "NONE",
 				}},
 			})
 		case strings.Contains(r.URL.Path, "/zones/us-east1-d/instances/test-instance-abc"):
@@ -229,6 +234,71 @@ func TestCreateInstanceViaRegionalMIG_IssuesCreateAndDiscoversZone(t *testing.T)
 	// response (PAGELESS default).
 	assert.Contains(t, listQuery, "filter=name+eq+%22test-instance-abc%22",
 		"listManagedInstances must carry a server-side name filter to bound the response under quota")
+}
+
+func TestCreateInstanceViaRegionalMIG_WaitsForCurrentActionNone(t *testing.T) {
+	// Regression guard for a real bug surfaced against gitlab-runner-sandbox:
+	// the regional CreateInstances Operation completing does not mean the
+	// underlying VM is visible to Instances.Get. The MIG accepts the
+	// request and starts provisioning, but the synchronous post-create
+	// steps (firewall tag, SSH-key push) race and 404 if we don't wait
+	// for currentAction to reach "NONE".
+	//
+	// Test shape: listManagedInstances returns CurrentAction "CREATING"
+	// the first time it's called and "NONE" thereafter. The create must
+	// poll past the first response, and Instances.Get must only fire
+	// after the MIG reports "NONE".
+	var listCalls int
+	srv, _ := newMIGTestServer(t, func(w http.ResponseWriter, r *http.Request, _ *[]recordedRequest) {
+		switch {
+		case strings.Contains(r.URL.Path, "/regions/us-east1/instanceGroupManagers/my-rmig/createInstances"):
+			respondJSON(t, w, &raw.Operation{Name: "op-rcreate-2", Status: "PENDING"})
+		case strings.Contains(r.URL.Path, "/regions/us-east1/operations/op-rcreate-2/wait"):
+			respondJSON(t, w, &raw.Operation{Name: "op-rcreate-2", Status: "DONE"})
+		case strings.Contains(r.URL.Path, "/regions/us-east1/instanceGroupManagers/my-rmig/listManagedInstances"):
+			listCalls++
+			action := "CREATING"
+			if listCalls > 1 {
+				action = "NONE"
+			}
+			respondJSON(t, w, &raw.RegionInstanceGroupManagersListInstancesResponse{
+				ManagedInstances: []*raw.ManagedInstance{{
+					Instance:      "https://www.googleapis.com/compute/v1/projects/test-project/zones/us-east1-c/instances/test-instance-abc",
+					CurrentAction: action,
+				}},
+			})
+		case strings.Contains(r.URL.Path, "/zones/us-east1-c/instances/test-instance-abc"):
+			// Short-circuit post-create lookups; we just need to verify
+			// the poll ran past the "CREATING" response before reaching
+			// this Instances.Get.
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	defer srv.Close()
+
+	c := newComputeUtilForRegionalTest(t, srv.URL, "us-east1", "my-rmig")
+	// testBackoffFactory's 1ns MaxElapsedTime means the poll loop would
+	// hit Stop after a single iteration. Give it just enough slack to
+	// allow at least two polls; the test still finishes in milliseconds.
+	c.operationBackoffFactory = &backoffFactory{
+		InitialInterval:     1,
+		RandomizationFactor: 0,
+		Multiplier:          1,
+		MaxInterval:         1,
+		MaxElapsedTime:      time.Second,
+	}
+	d := &Driver{Region: "us-east1", RegionInstanceGroupManager: "my-rmig"}
+
+	err := c.createInstanceViaMIG(d)
+	require.Error(t, err, "expected short-circuit error from the post-stability Instances.Get")
+
+	assert.GreaterOrEqual(t, listCalls, 2,
+		"listManagedInstances must be polled at least twice: once seeing CREATING, then again seeing NONE")
+	assert.Equal(t, "us-east1-c", c.zone,
+		"zone discovery happens off the same listManagedInstances response that confirms stability")
 }
 
 func TestDeleteInstanceViaRegionalMIG_IssuesRegionalDelete(t *testing.T) {
