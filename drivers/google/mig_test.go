@@ -315,8 +315,8 @@ func TestSyncDriverStateFromInstance_PopulatesResolvedFields(t *testing.T) {
 	// to the Resolved* fields, leaving the operator-intent Zone /
 	// MachineType untouched.
 	d := &Driver{
-		Zone:        "us-central1-a",  // operator intent: flag default
-		MachineType: "n1-standard-1",  // operator intent: flag default
+		Zone:        "us-central1-a", // operator intent: flag default
+		MachineType: "n1-standard-1", // operator intent: flag default
 	}
 	c := &ComputeUtil{}
 	c.syncDriverStateFromInstance(d, &raw.Instance{

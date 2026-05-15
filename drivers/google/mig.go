@@ -50,6 +50,7 @@ import (
 // matches both:
 //   - Instance self-links: ".../zones/<zone>/instances/<name>"
 //   - Zone self-links:     ".../zones/<zone>"
+//
 // Precompiled at package init so zoneFromInstanceURL doesn't pay the
 // compile cost per call.
 var zonePathSegment = regexp.MustCompile(`/zones/([^/]+)`)
