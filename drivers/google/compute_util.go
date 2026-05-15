@@ -47,6 +47,22 @@ type ComputeUtil struct {
 	maintenancePolicy string
 	skipFirewall      bool
 
+	// instanceGroupManager mirrors Driver.InstanceGroupManager. Non-empty
+	// means provisioning happens via InstanceGroupManagers.CreateInstances
+	// (and deletion via DeleteInstances) rather than the direct
+	// Instances.Insert / Instances.Delete path.
+	instanceGroupManager string
+
+	// regionInstanceGroupManager mirrors Driver.RegionInstanceGroupManager.
+	// When non-empty, provisioning happens against the regional MIG service.
+	regionInstanceGroupManager string
+
+	// regionExplicit holds an operator-supplied region (Driver.Region).
+	// Used by region() when zone is empty, i.e. regional-MIG mode pre-zone-
+	// discovery. Named with the "Explicit" suffix because region() is
+	// already a method on this type.
+	regionExplicit string
+
 	operationBackoffFactory *backoffFactory
 }
 
@@ -61,6 +77,20 @@ var (
 	networkRegex        = regexp.MustCompile(`/networks/`)
 	networkProjectRegex = regexp.MustCompile(apiURL + `(?P<project_name>[^/]+)/global/networks/(?P<network_name>[A-Za-z-]+)`)
 )
+
+// effectiveZone picks the zone to target for compute API calls,
+// preferring the post-create-discovered Driver.ResolvedZone when one is
+// on file. Subsequent docker-machine invocations on a MIG-created VM
+// (Remove, Stop, GetIP, …) reconstruct ComputeUtil from on-disk
+// Driver state and need to target the resolved zone, not the
+// operator-supplied flag value. Returns the operator value when
+// ResolvedZone is empty (non-MIG callers or pre-discovery state).
+func effectiveZone(d *Driver) string {
+	if d.ResolvedZone != "" {
+		return d.ResolvedZone
+	}
+	return d.Zone
+}
 
 // NewComputeUtil creates and initializes a ComputeUtil.
 func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
@@ -82,31 +112,47 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		networkProject = matches[1]
 	}
 
+	zone := effectiveZone(driver)
+
 	return &ComputeUtil{
-		zone:                    driver.Zone,
-		instanceName:            driver.MachineName,
-		userName:                driver.SSHUser,
-		project:                 driver.Project,
-		diskTypeURL:             driver.DiskType,
-		address:                 driver.Address,
-		networkProject:          networkProject,
-		network:                 driver.Network,
-		subnetwork:              driver.Subnetwork,
-		preemptible:             driver.Preemptible,
-		useInternalIP:           driver.UseInternalIP,
-		useInternalIPOnly:       driver.UseInternalIPOnly,
-		service:                 service,
-		zoneURL:                 apiURL + driver.Project + "/zones/" + driver.Zone,
-		globalURL:               apiURL + driver.Project + "/global",
-		SwarmMaster:             driver.SwarmMaster,
-		SwarmHost:               driver.SwarmHost,
-		openPorts:               driver.OpenPorts,
-		operationBackoffFactory: driver.OperationBackoffFactory,
-		minCPUPlatform:          driver.MinCPUPlatform,
-		accelerator:             driver.Accelerator,
-		maintenancePolicy:       driver.MaintenancePolicy,
-		skipFirewall:            driver.SkipFirewall,
+		zone:                       zone,
+		instanceName:               driver.MachineName,
+		userName:                   driver.SSHUser,
+		project:                    driver.Project,
+		diskTypeURL:                driver.DiskType,
+		address:                    driver.Address,
+		networkProject:             networkProject,
+		network:                    driver.Network,
+		subnetwork:                 driver.Subnetwork,
+		preemptible:                driver.Preemptible,
+		useInternalIP:              driver.UseInternalIP,
+		useInternalIPOnly:          driver.UseInternalIPOnly,
+		service:                    service,
+		zoneURL:                    apiURL + driver.Project + "/zones/" + zone,
+		globalURL:                  apiURL + driver.Project + "/global",
+		SwarmMaster:                driver.SwarmMaster,
+		SwarmHost:                  driver.SwarmHost,
+		openPorts:                  driver.OpenPorts,
+		operationBackoffFactory:    driver.OperationBackoffFactory,
+		minCPUPlatform:             driver.MinCPUPlatform,
+		accelerator:                driver.Accelerator,
+		maintenancePolicy:          driver.MaintenancePolicy,
+		skipFirewall:               driver.SkipFirewall,
+		instanceGroupManager:       driver.InstanceGroupManager,
+		regionInstanceGroupManager: driver.RegionInstanceGroupManager,
+		regionExplicit:             driver.Region,
 	}, nil
+}
+
+// usesMIG mirrors Driver.usesMIG so ComputeUtil callers (which don't always
+// hold a driver reference) can dispatch on provisioning mode.
+func (c *ComputeUtil) usesMIG() bool {
+	return c.instanceGroupManager != "" || c.regionInstanceGroupManager != ""
+}
+
+// usesRegionalMIG mirrors Driver.usesRegionalMIG.
+func (c *ComputeUtil) usesRegionalMIG() bool {
+	return c.regionInstanceGroupManager != ""
 }
 
 func (c *ComputeUtil) acceleratorCountAndType() (int, string) {
@@ -197,7 +243,14 @@ func (c *ComputeUtil) staticAddress() (string, error) {
 	return externalAddress.Address, nil
 }
 
+// region returns the GCP region this ComputeUtil targets. In regional-MIG
+// mode the operator supplies it explicitly (zone is unknown pre-create);
+// otherwise it's derived from zone by stripping the trailing "-<letter>"
+// (e.g. us-east1-c -> us-east1).
 func (c *ComputeUtil) region() string {
+	if c.regionExplicit != "" {
+		return c.regionExplicit
+	}
 	return c.zone[:len(c.zone)-2]
 }
 
@@ -312,8 +365,17 @@ func (c *ComputeUtil) instance() (*raw.Instance, error) {
 	return c.service.Instances.Get(c.project, c.zone, c.instanceName).Do()
 }
 
-// createInstance creates a GCE VM instance.
+// createInstance creates a GCE VM instance, either directly via
+// Instances.Insert or, when the driver is configured with a Managed
+// Instance Group, via InstanceGroupManagers.CreateInstances. The MIG path
+// is the gateway to Flex MIG, where the instance template carries a
+// precedence list of machine families and GCP selects the first available
+// one per create. See Driver.usesMIG.
 func (c *ComputeUtil) createInstance(d *Driver) error {
+	if d.usesMIG() {
+		return c.createInstanceViaMIG(d)
+	}
+
 	log.Infof("Creating instance")
 
 	var net string
@@ -597,7 +659,16 @@ func parseLabels(d *Driver) map[string]string {
 }
 
 // deleteInstance deletes the instance, leaving the persistent disk.
+//
+// In MIG mode we call InstanceGroupManagers.DeleteInstances instead so the
+// MIG's bookkeeping (targetSize, per-instance configs) stays consistent.
+// Boot disks are managed by the MIG itself in that mode, so deleteDisk
+// becomes a no-op via the existing nil-safe lookup.
 func (c *ComputeUtil) deleteInstance() error {
+	if c.usesMIG() {
+		return c.deleteInstanceViaMIG()
+	}
+
 	log.Infof("Deleting instance.")
 	op, err := c.service.Instances.Delete(c.project, c.zone, c.instanceName).Do()
 	if err != nil {
@@ -666,9 +737,23 @@ func (c *ComputeUtil) waitForOp(opGetter func() (*raw.Operation, error)) error {
 }
 
 // waitForRegionalOp waits for the regional operation to finish.
+//
+// Historical naming: this waits for ZoneOperations despite its name. It
+// pre-dates regional-MIG support and renaming it would touch every caller.
+// For true region-scoped operations (regional MIG create/delete) use
+// waitForRegionOp below.
 func (c *ComputeUtil) waitForRegionalOp(name string) error {
 	return c.waitForOp(func() (*raw.Operation, error) {
 		return c.service.ZoneOperations.Wait(c.project, c.zone, name).Do()
+	})
+}
+
+// waitForRegionOp waits for an actually-regional operation (one issued
+// against RegionInstanceGroupManagers etc.). Distinct from waitForRegionalOp
+// because that one polls ZoneOperations under a misleading name.
+func (c *ComputeUtil) waitForRegionOp(name string) error {
+	return c.waitForOp(func() (*raw.Operation, error) {
+		return c.service.RegionOperations.Wait(c.project, c.region(), name).Do()
 	})
 }
 
