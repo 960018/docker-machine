@@ -159,11 +159,6 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.Instanc
 		})
 	}
 
-	// Accelerator. Bare type name; GCE resolves to the chosen zone
-	// (same pattern as MachineType / DiskType in bulkInsert).
-	// Static external IP is not supported here: bulkInsert rejects
-	// custom NatIPs with HTTP 400. We block --google-address at
-	// flag-validation time, so it never reaches this builder.
 	if count, accelType := c.acceleratorCountAndType(); count > 0 && accelType != "" {
 		props.GuestAccelerators = []*raw.AcceleratorConfig{
 			{
