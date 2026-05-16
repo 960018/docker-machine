@@ -406,5 +406,3 @@ func (c *ComputeUtil) warnAboutIgnoredFlagsInBulkInsertMode(d *Driver) {
 		}
 	}
 }
-
-

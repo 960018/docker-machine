@@ -9,9 +9,9 @@ import (
 
 func TestParseLocationZoneEntry(t *testing.T) {
 	tests := []struct {
-		entry      string
-		wantZone   string
-		wantPref   string
+		entry    string
+		wantZone string
+		wantPref string
 	}{
 		{"us-east1-b", "us-east1-b", "ALLOW"},
 		{"us-east1-b:ALLOW", "us-east1-b", "ALLOW"},
@@ -185,13 +185,13 @@ func TestBuildBulkInsertInstanceProperties_BareNamesNoZone(t *testing.T) {
 	// zonal URLs), so GCP can resolve them against the placement zone
 	// chosen by the LocationPolicy.
 	d := &Driver{
-		MachineType:  "n2-standard-2",
-		MachineImage: "ubuntu-os-cloud/global/images/ubuntu-2204",
-		DiskSize:     20,
-		DiskType:     "pd-balanced",
-		Network:      "default",
+		MachineType:    "n2-standard-2",
+		MachineImage:   "ubuntu-os-cloud/global/images/ubuntu-2204",
+		DiskSize:       20,
+		DiskType:       "pd-balanced",
+		Network:        "default",
 		ServiceAccount: defaultServiceAccount,
-		Scopes:       defaultScopes,
+		Scopes:         defaultScopes,
 	}
 	c := &ComputeUtil{
 		project:        "p",
