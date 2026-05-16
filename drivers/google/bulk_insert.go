@@ -165,24 +165,22 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.Instanc
 	return props, nil
 }
 
-// buildLocationPolicy returns nil when no zones / target-shape are
-// configured (GCP picks freely within the region).
+// buildLocationPolicy returns nil when no zones are configured (GCP
+// picks freely within the region). TargetShape is intentionally not
+// exposed: we always send count=1, where every shape collapses to
+// "pick one zone".
 func (c *ComputeUtil) buildLocationPolicy() *raw.LocationPolicy {
-	if len(c.locationZones) == 0 && c.locationTargetShape == "" {
+	if len(c.locationZones) == 0 {
 		return nil
 	}
 
-	policy := &raw.LocationPolicy{}
-	if c.locationTargetShape != "" {
-		policy.TargetShape = c.locationTargetShape
+	policy := &raw.LocationPolicy{
+		Locations: make(map[string]raw.LocationPolicyLocation, len(c.locationZones)),
 	}
-	if len(c.locationZones) > 0 {
-		policy.Locations = make(map[string]raw.LocationPolicyLocation, len(c.locationZones))
-		for _, entry := range c.locationZones {
-			zone, pref := parseLocationZoneEntry(entry)
-			policy.Locations["zones/"+zone] = raw.LocationPolicyLocation{
-				Preference: pref,
-			}
+	for _, entry := range c.locationZones {
+		zone, pref := parseLocationZoneEntry(entry)
+		policy.Locations["zones/"+zone] = raw.LocationPolicyLocation{
+			Preference: pref,
 		}
 	}
 	return policy
