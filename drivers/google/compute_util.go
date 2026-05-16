@@ -47,21 +47,18 @@ type ComputeUtil struct {
 	maintenancePolicy string
 	skipFirewall      bool
 
-	// instanceGroupManager mirrors Driver.InstanceGroupManager. Non-empty
-	// means provisioning happens via InstanceGroupManagers.CreateInstances
-	// (and deletion via DeleteInstances) rather than the direct
-	// Instances.Insert / Instances.Delete path.
-	instanceGroupManager string
-
-	// regionInstanceGroupManager mirrors Driver.RegionInstanceGroupManager.
-	// When non-empty, provisioning happens against the regional MIG service.
-	regionInstanceGroupManager string
-
 	// regionExplicit holds an operator-supplied region (Driver.Region).
-	// Used by region() when zone is empty, i.e. regional-MIG mode pre-zone-
+	// Used by region() when zone is empty, i.e. bulkInsert mode pre-zone-
 	// discovery. Named with the "Explicit" suffix because region() is
 	// already a method on this type.
 	regionExplicit string
+
+	// flexMachineTypes and locationZones / locationTargetShape carry the
+	// bulkInsert flex policy and location policy. Empty when the driver
+	// is in direct-create mode (Region not set).
+	flexMachineTypes    []string
+	locationZones       []string
+	locationTargetShape string
 
 	operationBackoffFactory *backoffFactory
 }
@@ -80,11 +77,11 @@ var (
 
 // effectiveZone picks the zone to target for compute API calls,
 // preferring the post-create-discovered Driver.ResolvedZone when one is
-// on file. Subsequent docker-machine invocations on a MIG-created VM
-// (Remove, Stop, GetIP, …) reconstruct ComputeUtil from on-disk
+// on file. Subsequent docker-machine invocations on a bulkInsert-placed
+// VM (Remove, Stop, GetIP, …) reconstruct ComputeUtil from on-disk
 // Driver state and need to target the resolved zone, not the
 // operator-supplied flag value. Returns the operator value when
-// ResolvedZone is empty (non-MIG callers or pre-discovery state).
+// ResolvedZone is empty (direct-create callers or pre-discovery state).
 func effectiveZone(d *Driver) string {
 	if d.ResolvedZone != "" {
 		return d.ResolvedZone
@@ -138,21 +135,18 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		accelerator:                driver.Accelerator,
 		maintenancePolicy:          driver.MaintenancePolicy,
 		skipFirewall:               driver.SkipFirewall,
-		instanceGroupManager:       driver.InstanceGroupManager,
-		regionInstanceGroupManager: driver.RegionInstanceGroupManager,
-		regionExplicit:             driver.Region,
+		regionExplicit:      driver.Region,
+		flexMachineTypes:    driver.FlexMachineTypes,
+		locationZones:       driver.LocationZones,
+		locationTargetShape: driver.LocationTargetShape,
 	}, nil
 }
 
-// usesMIG mirrors Driver.usesMIG so ComputeUtil callers (which don't always
-// hold a driver reference) can dispatch on provisioning mode.
-func (c *ComputeUtil) usesMIG() bool {
-	return c.instanceGroupManager != "" || c.regionInstanceGroupManager != ""
-}
-
-// usesRegionalMIG mirrors Driver.usesRegionalMIG.
-func (c *ComputeUtil) usesRegionalMIG() bool {
-	return c.regionInstanceGroupManager != ""
+// usesBulkInsert mirrors Driver.usesBulkInsert so ComputeUtil callers
+// (which don't always hold a driver reference) can dispatch on
+// provisioning mode.
+func (c *ComputeUtil) usesBulkInsert() bool {
+	return c.regionExplicit != ""
 }
 
 func (c *ComputeUtil) acceleratorCountAndType() (int, string) {
@@ -243,7 +237,7 @@ func (c *ComputeUtil) staticAddress() (string, error) {
 	return externalAddress.Address, nil
 }
 
-// region returns the GCP region this ComputeUtil targets. In regional-MIG
+// region returns the GCP region this ComputeUtil targets. In bulkInsert
 // mode the operator supplies it explicitly (zone is unknown pre-create);
 // otherwise it's derived from zone by stripping the trailing "-<letter>"
 // (e.g. us-east1-c -> us-east1).
@@ -366,14 +360,14 @@ func (c *ComputeUtil) instance() (*raw.Instance, error) {
 }
 
 // createInstance creates a GCE VM instance, either directly via
-// Instances.Insert or, when the driver is configured with a Managed
-// Instance Group, via InstanceGroupManagers.CreateInstances. The MIG path
-// is the gateway to Flex MIG, where the instance template carries a
-// precedence list of machine families and GCP selects the first available
-// one per create. See Driver.usesMIG.
+// Instances.Insert (zonal) or, when the driver is configured with
+// --google-region, via RegionInstances.BulkInsert. The bulkInsert path
+// supports a zone preference list (LocationPolicy) and a ranked machine-
+// type fallback (InstanceFlexibilityPolicy); GCP picks the first
+// combination it can fulfil. See Driver.usesBulkInsert.
 func (c *ComputeUtil) createInstance(d *Driver) error {
-	if d.usesMIG() {
-		return c.createInstanceViaMIG(d)
+	if d.usesBulkInsert() {
+		return c.createInstanceViaBulkInsert(d)
 	}
 
 	log.Infof("Creating instance")
@@ -660,13 +654,18 @@ func parseLabels(d *Driver) map[string]string {
 
 // deleteInstance deletes the instance, leaving the persistent disk.
 //
-// In MIG mode we call InstanceGroupManagers.DeleteInstances instead so the
-// MIG's bookkeeping (targetSize, per-instance configs) stays consistent.
-// Boot disks are managed by the MIG itself in that mode, so deleteDisk
-// becomes a no-op via the existing nil-safe lookup.
+// Both direct-create and bulkInsert modes converge on the same zonal
+// Instances.Delete call here: bulkInsert's create path resolved the
+// placed zone into Driver.ResolvedZone (and from there c.zone via
+// effectiveZone), so by the time we delete we know exactly which zone
+// to target. No region-scoped delete API is needed.
 func (c *ComputeUtil) deleteInstance() error {
-	if c.usesMIG() {
-		return c.deleteInstanceViaMIG()
+	if c.zone == "" {
+		// Defensive: a delete that runs before create's post-discovery
+		// finished (interrupted create, manual cleanup of config.json)
+		// has no zone to target. Surface the gap rather than firing a
+		// delete with an empty zone path.
+		return fmt.Errorf("cannot delete instance %q: zone unresolved (Driver.ResolvedZone / Driver.Zone both empty)", c.instanceName)
 	}
 
 	log.Infof("Deleting instance.")
@@ -738,10 +737,9 @@ func (c *ComputeUtil) waitForOp(opGetter func() (*raw.Operation, error)) error {
 
 // waitForRegionalOp waits for the regional operation to finish.
 //
-// Historical naming: this waits for ZoneOperations despite its name. It
-// pre-dates regional-MIG support and renaming it would touch every caller.
-// For true region-scoped operations (regional MIG create/delete) use
-// waitForRegionOp below.
+// Historical naming: this waits for ZoneOperations despite its name and
+// renaming it would touch every caller. For true region-scoped operations
+// (bulkInsert) use waitForRegionOp below.
 func (c *ComputeUtil) waitForRegionalOp(name string) error {
 	return c.waitForOp(func() (*raw.Operation, error) {
 		return c.service.ZoneOperations.Wait(c.project, c.zone, name).Do()
@@ -749,8 +747,8 @@ func (c *ComputeUtil) waitForRegionalOp(name string) error {
 }
 
 // waitForRegionOp waits for an actually-regional operation (one issued
-// against RegionInstanceGroupManagers etc.). Distinct from waitForRegionalOp
-// because that one polls ZoneOperations under a misleading name.
+// against RegionInstances etc.). Distinct from waitForRegionalOp because
+// that one polls ZoneOperations under a misleading name.
 func (c *ComputeUtil) waitForRegionOp(name string) error {
 	return c.waitForOp(func() (*raw.Operation, error) {
 		return c.service.RegionOperations.Wait(c.project, c.region(), name).Do()

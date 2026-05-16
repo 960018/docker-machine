@@ -67,58 +67,57 @@ type Driver struct {
 	MaintenancePolicy     string
 	SkipFirewall          bool
 
-	// InstanceGroupManager, when non-empty, switches the create/delete path
-	// to provision via a zonal Managed Instance Group rather than calling
-	// Instances.Insert directly. The MIG's instance template owns the
-	// machine type, boot disk, network, image, labels, etc., so flags that
-	// configure those are silently ignored in MIG mode and a warning is
-	// logged. Per-instance metadata (SSH keys) still flows through
-	// SetMetadata after creation; the rest of the lifecycle (Stop / Start /
-	// Restart / Kill / GetIP / GetState) is unchanged because it operates
-	// on the instance regardless of how it was provisioned.
+	// Region switches the create path from Instances.Insert to
+	// RegionInstances.BulkInsert. The actual zone is chosen by GCP at
+	// create time from the LocationZones list, and the machine type is
+	// chosen from FlexMachineTypes if set. Once placed, lifecycle
+	// operations (Stop / Start / Remove / GetIP / GetState) run against
+	// the resolved zone exactly as the direct path.
 	//
-	// The motivating use case is Flex MIG: the template declares a
-	// precedence list of machine families, and GCP's MIG scheduler picks
-	// the first available one on each create. That gives us per-create
-	// machine-family spillover without implementing the retry loop
-	// ourselves, while keeping docker-machine as the autoscaler.
-	InstanceGroupManager string
-
-	// RegionInstanceGroupManager is the regional counterpart of
-	// InstanceGroupManager. The MIG itself spans multiple zones in a
-	// region; CreateInstances picks a zone at create time based on the
-	// MIG's distribution policy and (for Flex MIG) machine-family
-	// availability. Mutually exclusive with InstanceGroupManager.
-	//
-	// Region must be set when this is. The eventual zone is discovered
-	// from ListManagedInstances post-create and stored on the Driver so
-	// subsequent lifecycle operations (Stop / Start / Remove) target the
-	// correct zone after the docker-machine state is reloaded from disk.
-	RegionInstanceGroupManager string
-
-	// Region is the GCP region for regional MIG mode. Ignored otherwise
-	// (zonal modes derive region from zone by stripping the trailing
-	// "-<zoneletter>" suffix).
+	// Region and Zone are mutually exclusive on the input side: pick a
+	// region for bulkInsert mode or a zone for direct Instances.Insert,
+	// not both. The discovered zone is written back to ResolvedZone /
+	// Driver state after create.
 	Region string
+
+	// FlexMachineTypes is a ranked list of GCE machine types passed to
+	// bulkInsert as InstanceFlexibilityPolicy.InstanceSelections. First
+	// entry = rank 0 (most preferred). GCP attempts the highest-rank
+	// type first and falls back to the next on capacity errors. Pure
+	// machine-type names ("n2-standard-2"), no URLs. Empty means no
+	// flex policy is sent (single machine type from --google-machine-type).
+	FlexMachineTypes []string
+
+	// LocationZones constrains bulkInsert's zone selection. Each entry
+	// is "zone" or "zone:PREFERENCE" where preference is ALLOW (default),
+	// PREFERRED, or DENY. Empty means GCP picks any zone in Region.
+	LocationZones []string
+
+	// LocationTargetShape controls how bulkInsert distributes when
+	// count > 1. One of ANY, ANY_SINGLE_ZONE, BALANCED. Empty defaults
+	// to ANY. With count=1 (the docker-machine flow today) this is
+	// largely cosmetic but kept for future batching.
+	LocationTargetShape string
 
 	// ResolvedZone and ResolvedMachineType carry post-create-discovered
 	// values from Instances.Get, populated by syncDriverStateFromInstance
-	// during finishPostCreate. Empty outside MIG mode.
+	// in finishPostCreate. Empty in direct-create mode (where Zone /
+	// MachineType are already ground truth).
 	//
 	// Why both exist alongside Zone / MachineType:
 	//   - Zone / MachineType retain operator intent (flag value or
-	//     default). For non-MIG callers they're authoritative.
-	//   - Under MIG mode the MIG (or Flex policy) owns placement and the
-	//     operator's flag values are ignored. Resolved* carries reality.
+	//     default). For direct-create callers they're authoritative.
+	//   - Under bulkInsert mode GCP picks the actual zone and (with a
+	//     flex policy) the actual machine type. Resolved* carries that.
 	//
 	// Consumers:
-	//   - ComputeUtil construction prefers ResolvedZone over Zone, so
+	//   - ComputeUtil construction prefers ResolvedZone over Zone so
 	//     subsequent operations (Remove, Stop, GetIP, …) target the
-	//     right zone after a regional-MIG create even when --google-zone
+	//     right zone after a bulkInsert create even when --google-zone
 	//     wasn't supplied.
 	//   - gitlab-runner!6740 reads ResolvedMachineType for the
 	//     target_machine_type metric label, falling back to MachineType
-	//     for non-MIG callers where the two are the same.
+	//     for direct-create callers where the two are the same.
 	ResolvedZone        string
 	ResolvedMachineType string
 
@@ -322,19 +321,24 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			EnvVar: "GOOGLE_SKIP_FIREWALL_CREATE",
 		},
 		mcnflag.StringFlag{
-			Name:   "google-instance-group-manager",
-			Usage:  "(Experimental) Name of a zonal Managed Instance Group to provision instances through. When set, the MIG's instance template owns machine type / disk / network / image; flags configuring those are ignored. Required for Flex MIG support.",
-			EnvVar: "GOOGLE_INSTANCE_GROUP_MANAGER",
-		},
-		mcnflag.StringFlag{
-			Name:   "google-region-instance-group-manager",
-			Usage:  "(Experimental) Name of a regional Managed Instance Group to provision instances through. Like --google-instance-group-manager but the MIG spans a region; requires --google-region. Mutually exclusive with --google-instance-group-manager.",
-			EnvVar: "GOOGLE_REGION_INSTANCE_GROUP_MANAGER",
-		},
-		mcnflag.StringFlag{
 			Name:   "google-region",
-			Usage:  "GCP region for regional MIG mode. Ignored in zonal modes (region is derived from --google-zone).",
+			Usage:  "(Experimental) GCP region. When set, provisioning uses RegionInstances.BulkInsert with the configured zones / flex machine types. Mutually exclusive with --google-zone.",
 			EnvVar: "GOOGLE_REGION",
+		},
+		mcnflag.StringSliceFlag{
+			Name:   "google-flex-machine-type",
+			Usage:  "(Experimental) GCE machine type for bulkInsert flex policy. Repeat in preference order: first occurrence is rank 0 (most preferred). Bare machine-type names (e.g. n2-standard-2), no URLs. Requires --google-region.",
+			EnvVar: "GOOGLE_FLEX_MACHINE_TYPE",
+		},
+		mcnflag.StringSliceFlag{
+			Name:   "google-location-zone",
+			Usage:  "(Experimental) Zone constraint for bulkInsert. Format: zone[:PREFERENCE] where preference is ALLOW (default), PREFERRED, or DENY. Repeat per zone. Empty = any zone in --google-region.",
+			EnvVar: "GOOGLE_LOCATION_ZONE",
+		},
+		mcnflag.StringFlag{
+			Name:   "google-location-target-shape",
+			Usage:  "(Experimental) bulkInsert distribution shape: ANY, ANY_SINGLE_ZONE, or BALANCED. Largely cosmetic with count=1. Defaults to ANY.",
+			EnvVar: "GOOGLE_LOCATION_TARGET_SHAPE",
 		},
 	}
 }
@@ -425,15 +429,25 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.SSHPort = 22
 	d.SetSwarmConfigFromFlags(flags)
 
-	d.InstanceGroupManager = flags.String("google-instance-group-manager")
-	d.RegionInstanceGroupManager = flags.String("google-region-instance-group-manager")
 	d.Region = flags.String("google-region")
+	d.FlexMachineTypes = flags.StringSlice("google-flex-machine-type")
+	d.LocationZones = flags.StringSlice("google-location-zone")
+	d.LocationTargetShape = flags.String("google-location-target-shape")
 
-	if d.InstanceGroupManager != "" && d.RegionInstanceGroupManager != "" {
-		return errors.New("--google-instance-group-manager and --google-region-instance-group-manager are mutually exclusive: pick one provisioning channel")
+	if d.Region != "" && d.Zone != "" && d.Zone != defaultZone {
+		return errors.New("--google-region and --google-zone are mutually exclusive: pick a region for bulkInsert mode or a zone for direct create")
 	}
-	if d.RegionInstanceGroupManager != "" && d.Region == "" {
-		return errors.New("--google-region-instance-group-manager requires --google-region")
+	if d.Region == "" && len(d.FlexMachineTypes) > 0 {
+		return errors.New("--google-flex-machine-type requires --google-region")
+	}
+	if d.Region == "" && len(d.LocationZones) > 0 {
+		return errors.New("--google-location-zone requires --google-region")
+	}
+	if d.Region == "" && d.LocationTargetShape != "" {
+		return errors.New("--google-location-target-shape requires --google-region")
+	}
+	if shape := d.LocationTargetShape; shape != "" && shape != "ANY" && shape != "ANY_SINGLE_ZONE" && shape != "BALANCED" {
+		return fmt.Errorf("--google-location-target-shape must be one of ANY, ANY_SINGLE_ZONE, BALANCED (got %q)", shape)
 	}
 
 	backoffRandomizationFactor, err := strconv.ParseFloat(flags.String("google-operation-backoff-randomization-factor"), 64)
@@ -503,19 +517,12 @@ func (d *Driver) PreCreateCheck() error {
 	return nil
 }
 
-// usesMIG reports whether the driver was configured to provision via a
-// Managed Instance Group rather than direct Instances.Insert calls — either
-// zonal or regional.
-func (d *Driver) usesMIG() bool {
-	return d.InstanceGroupManager != "" || d.RegionInstanceGroupManager != ""
-}
-
-// usesRegionalMIG reports whether the driver is in regional-MIG mode
-// specifically. Zonal MIGs use a different API service and don't need the
-// post-create zone discovery dance, so this gate keeps those code paths
-// distinct.
-func (d *Driver) usesRegionalMIG() bool {
-	return d.RegionInstanceGroupManager != ""
+// usesBulkInsert reports whether the driver was configured to provision
+// via RegionInstances.BulkInsert rather than direct Instances.Insert.
+// Region presence is the trigger: bulkInsert is region-scoped and the
+// configured zones (LocationZones) live inside that region.
+func (d *Driver) usesBulkInsert() bool {
+	return d.Region != ""
 }
 
 // Create creates a GCE VM instance acting as a docker host.
