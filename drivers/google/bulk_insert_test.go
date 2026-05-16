@@ -38,7 +38,7 @@ func TestBuildLocationPolicy_Nil(t *testing.T) {
 	assert.Nil(t, c.buildLocationPolicy())
 }
 
-func TestBuildLocationPolicy_ZonesOnly(t *testing.T) {
+func TestBuildLocationPolicy_Zones(t *testing.T) {
 	c := &ComputeUtil{
 		locationZones: []string{"us-east1-b", "us-east1-c:PREFERRED", "us-east1-d:DENY"},
 	}
@@ -49,27 +49,6 @@ func TestBuildLocationPolicy_ZonesOnly(t *testing.T) {
 	assert.Equal(t, "ALLOW", p.Locations["zones/us-east1-b"].Preference)
 	assert.Equal(t, "PREFERRED", p.Locations["zones/us-east1-c"].Preference)
 	assert.Equal(t, "DENY", p.Locations["zones/us-east1-d"].Preference)
-}
-
-func TestBuildLocationPolicy_TargetShapeOnly(t *testing.T) {
-	c := &ComputeUtil{locationTargetShape: "BALANCED"}
-	p := c.buildLocationPolicy()
-	require.NotNil(t, p)
-	assert.Equal(t, "BALANCED", p.TargetShape)
-	assert.Empty(t, p.Locations)
-}
-
-func TestBuildLocationPolicy_Combined(t *testing.T) {
-	c := &ComputeUtil{
-		locationZones:       []string{"us-east1-b", "us-east1-c"},
-		locationTargetShape: "ANY",
-	}
-	p := c.buildLocationPolicy()
-	require.NotNil(t, p)
-	assert.Equal(t, "ANY", p.TargetShape)
-	require.Len(t, p.Locations, 2)
-	assert.Equal(t, "ALLOW", p.Locations["zones/us-east1-b"].Preference)
-	assert.Equal(t, "ALLOW", p.Locations["zones/us-east1-c"].Preference)
 }
 
 func TestBuildInstanceFlexibilityPolicy_Nil(t *testing.T) {

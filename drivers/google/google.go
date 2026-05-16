@@ -88,10 +88,6 @@ type Driver struct {
 	// picks any zone in Region.
 	LocationZones []string
 
-	// LocationTargetShape is one of ANY / ANY_SINGLE_ZONE / BALANCED.
-	// Largely cosmetic with count=1, kept for future batching.
-	LocationTargetShape string
-
 	// ResolvedZone and ResolvedMachineType carry the values GCP actually
 	// picked, populated by syncDriverStateFromInstance after a successful
 	// create. Empty in direct mode (Zone / MachineType are reality there).
@@ -321,11 +317,6 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "(Experimental) Zone constraint for bulkInsert. Format: zone[:PREFERENCE] where preference is ALLOW (default), PREFERRED, or DENY. Repeat per zone. Empty = any zone in --google-region.",
 			EnvVar: "GOOGLE_LOCATION_ZONE",
 		},
-		mcnflag.StringFlag{
-			Name:   "google-location-target-shape",
-			Usage:  "(Experimental) bulkInsert distribution shape: ANY, ANY_SINGLE_ZONE, or BALANCED. Largely cosmetic with count=1. Defaults to ANY.",
-			EnvVar: "GOOGLE_LOCATION_TARGET_SHAPE",
-		},
 	}
 }
 
@@ -419,7 +410,6 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.Region = flags.String("google-region")
 	d.FlexMachineTypes = flags.StringSlice("google-flex-machine-type")
 	d.LocationZones = flags.StringSlice("google-location-zone")
-	d.LocationTargetShape = flags.String("google-location-target-shape")
 
 	if d.BulkInsert {
 		if d.Region == "" {
@@ -437,12 +427,6 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		if len(d.LocationZones) > 0 {
 			return errors.New("--google-location-zone requires --google-bulk-insert")
 		}
-		if d.LocationTargetShape != "" {
-			return errors.New("--google-location-target-shape requires --google-bulk-insert")
-		}
-	}
-	if shape := d.LocationTargetShape; shape != "" && shape != "ANY" && shape != "ANY_SINGLE_ZONE" && shape != "BALANCED" {
-		return fmt.Errorf("--google-location-target-shape must be one of ANY, ANY_SINGLE_ZONE, BALANCED (got %q)", shape)
 	}
 
 	backoffRandomizationFactor, err := strconv.ParseFloat(flags.String("google-operation-backoff-randomization-factor"), 64)
