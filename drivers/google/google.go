@@ -422,8 +422,6 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 			return errors.New("--google-address is not supported with --google-bulk-insert: bulkInsert does not accept custom external IPs")
 		}
 	} else {
-		// Reject bulkInsert-only flags in direct mode rather than
-		// silently dropping, so typos surface.
 		if len(d.FlexMachineTypes) > 0 {
 			return errors.New("--google-flex-machine-type requires --google-bulk-insert")
 		}
