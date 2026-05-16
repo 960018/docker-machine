@@ -418,10 +418,10 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		if d.Zone != "" && d.Zone != defaultZone {
 			return errors.New("--google-bulk-insert and --google-zone are mutually exclusive: bulkInsert picks the zone from --google-location-zone")
 		}
-		// bulkInsert rejects custom external IPs server-side with a
-		// 400. Fail fast here rather than mid-create.
+		// bulkInsert does not accept custom external IPs. Fail fast
+		// here rather than mid-create.
 		if d.Address != "" {
-			return errors.New("--google-address is not supported with --google-bulk-insert: GCE bulkInsert rejects custom external IPs (HTTP 400)")
+			return errors.New("--google-address is not supported with --google-bulk-insert: bulkInsert does not accept custom external IPs")
 		}
 	} else {
 		// Reject bulkInsert-only flags in direct mode rather than
