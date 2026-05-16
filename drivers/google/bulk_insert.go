@@ -159,8 +159,19 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.Instanc
 		})
 	}
 
-	// --google-address and --google-accelerator imply a specific zone;
-	// rejected upstream by the flag validator in bulkInsert mode.
+	// Accelerator. Bare type name; GCE resolves to the chosen zone
+	// (same pattern as MachineType / DiskType in bulkInsert).
+	// Static external IP is not supported here: bulkInsert rejects
+	// custom NatIPs with HTTP 400. We block --google-address at
+	// flag-validation time, so it never reaches this builder.
+	if count, accelType := c.acceleratorCountAndType(); count > 0 && accelType != "" {
+		props.GuestAccelerators = []*raw.AcceleratorConfig{
+			{
+				AcceleratorCount: int64(count),
+				AcceleratorType:  accelType,
+			},
+		}
+	}
 
 	return props, nil
 }
@@ -328,14 +339,14 @@ func machineTypeFromInstanceURL(rawURL string) (string, error) {
 }
 
 // warnAboutIgnoredFlagsInBulkInsertMode logs once per non-default flag
-// that bulkInsert overrides or rejects, so operator migration from the
-// direct path surfaces which flags now have different semantics.
+// that bulkInsert overrides, so operator migration from the direct
+// path surfaces which flags now have different semantics. Flags that
+// bulkInsert outright rejects (e.g. --google-address) are blocked at
+// flag-validation time, not warned about here.
 func (c *ComputeUtil) warnAboutIgnoredFlagsInBulkInsertMode(d *Driver) {
 	ignored := map[string]bool{
 		"google-zone":         d.Zone != "" && d.Zone != defaultZone,                                                     // location policy decides
 		"google-machine-type": len(d.FlexMachineTypes) > 0 && d.MachineType != "" && d.MachineType != defaultMachineType, // flex policy decides
-		"google-address":      d.Address != "",                                                                           // NIC pin conflicts with placement-time zone
-		"google-accelerator":  d.Accelerator != "",                                                                       // requires zone-specific resource URL
 	}
 	for flag, set := range ignored {
 		if set {
