@@ -418,6 +418,15 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		if d.Zone != "" && d.Zone != defaultZone {
 			return errors.New("--google-bulk-insert and --google-zone are mutually exclusive: bulkInsert picks the zone from --google-location-zone")
 		}
+		// Reject zone-bound flags rather than silently dropping them.
+		// Both imply a specific zone, which bulkInsert chooses post-hoc
+		// from LocationPolicy.
+		if d.Address != "" {
+			return errors.New("--google-address is not supported with --google-bulk-insert: static IPs are zone-bound, bulkInsert picks the zone post-hoc")
+		}
+		if d.Accelerator != "" {
+			return errors.New("--google-accelerator is not supported with --google-bulk-insert: accelerator types are zone-bound, bulkInsert picks the zone post-hoc")
+		}
 	} else {
 		// Reject bulkInsert-only flags in direct mode rather than
 		// silently dropping, so typos surface.
