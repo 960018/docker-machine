@@ -47,18 +47,15 @@ type ComputeUtil struct {
 	maintenancePolicy string
 	skipFirewall      bool
 
-	// bulkInsert mirrors Driver.BulkInsert: explicit opt-in for the
-	// RegionInstances.BulkInsert path. Drives mode dispatch.
+	// bulkInsert mirrors Driver.BulkInsert. Drives mode dispatch.
 	bulkInsert bool
 
-	// regionExplicit holds an operator-supplied region (Driver.Region).
-	// Used by region() when zone is empty, i.e. bulkInsert mode pre-zone-
-	// discovery. Named with the "Explicit" suffix because region() is
-	// already a method on this type.
+	// regionExplicit mirrors Driver.Region; used by region() when zone is
+	// empty (bulkInsert mode pre-zone-discovery). "Explicit" suffix
+	// distinguishes the field from the region() method.
 	regionExplicit string
 
-	// flexMachineTypes and locationZones / locationTargetShape carry the
-	// bulkInsert flex policy and location policy. Empty in direct mode.
+	// bulkInsert policy inputs (empty in direct mode).
 	flexMachineTypes    []string
 	locationZones       []string
 	locationTargetShape string
@@ -78,13 +75,10 @@ var (
 	networkProjectRegex = regexp.MustCompile(apiURL + `(?P<project_name>[^/]+)/global/networks/(?P<network_name>[A-Za-z-]+)`)
 )
 
-// effectiveZone picks the zone to target for compute API calls,
-// preferring the post-create-discovered Driver.ResolvedZone when one is
-// on file. Subsequent docker-machine invocations on a bulkInsert-placed
-// VM (Remove, Stop, GetIP, …) reconstruct ComputeUtil from on-disk
-// Driver state and need to target the resolved zone, not the
-// operator-supplied flag value. Returns the operator value when
-// ResolvedZone is empty (direct-create callers or pre-discovery state).
+// effectiveZone prefers Driver.ResolvedZone (the post-create-discovered
+// placement, persisted by libmachine) over Driver.Zone, so per-instance
+// API calls target the actual zone after a process restart reloads
+// Driver state from disk. Falls back to Zone in direct mode.
 func effectiveZone(d *Driver) string {
 	if d.ResolvedZone != "" {
 		return d.ResolvedZone
@@ -657,18 +651,10 @@ func parseLabels(d *Driver) map[string]string {
 }
 
 // deleteInstance deletes the instance, leaving the persistent disk.
-//
-// Both direct-create and bulkInsert modes converge on the same zonal
-// Instances.Delete call here: bulkInsert's create path resolved the
-// placed zone into Driver.ResolvedZone (and from there c.zone via
-// effectiveZone), so by the time we delete we know exactly which zone
-// to target. No region-scoped delete API is needed.
+// Direct and bulkInsert modes both converge on Instances.Delete here;
+// effectiveZone resolves c.zone to the placed zone before we get here.
 func (c *ComputeUtil) deleteInstance() error {
 	if c.zone == "" {
-		// Defensive: a delete that runs before create's post-discovery
-		// finished (interrupted create, manual cleanup of config.json)
-		// has no zone to target. Surface the gap rather than firing a
-		// delete with an empty zone path.
 		return fmt.Errorf("cannot delete instance %q: zone unresolved (Driver.ResolvedZone / Driver.Zone both empty)", c.instanceName)
 	}
 

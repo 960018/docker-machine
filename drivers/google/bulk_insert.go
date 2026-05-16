@@ -2,30 +2,17 @@ package google
 
 // bulkInsert provisioning path.
 //
-// When the driver is configured with --google-region, the usual zonal
-// Instances.Insert call is replaced by a regional RegionInstances.BulkInsert.
-// The single request can carry two independent fallback policies:
+// When --google-bulk-insert is set, the usual zonal Instances.Insert
+// is replaced by a regional RegionInstances.BulkInsert. The single
+// request carries LocationPolicy (zone preference, from
+// --google-location-zone) and InstanceFlexibilityPolicy (ranked
+// machine-type fallback, from --google-flex-machine-type) so GCP
+// picks zone × machine-type per call.
 //
-//   - LocationPolicy: zone preference list. Each --google-location-zone
-//     contributes one entry; GCP picks among ALLOW / PREFERRED zones (and
-//     skips DENY zones) based on current capacity. Empty list = any zone
-//     in the region.
-//   - InstanceFlexibilityPolicy: ranked machine-type alternatives. Each
-//     --google-flex-machine-type contributes one selection, with rank
-//     assigned by occurrence order (first = rank 0 = most preferred). GCP
-//     attempts the first-rank type and falls back to the next on capacity
-//     errors. Empty list = use --google-machine-type as the single shape.
-//
-// Together these give per-create zone × machine-type spillover in one
-// API call, without the operator having to provision a MIG. The
-// docker-machine flow is unchanged otherwise: count=1, the instance is
-// addressed by the caller-chosen name, and post-create configuration
-// (firewall tag, SSH key) runs against the discovered zone.
-//
-// The operation returned by BulkInsert is region-scoped and completes
-// once GCP has settled placement and started the create. As with the
-// regional MIG path before this, we need a second step to discover the
-// chosen zone before the synchronous post-create lookups race.
+// The Operation returned by BulkInsert is region-scoped and tells us
+// when GCP settled placement, but not where; we discover the chosen
+// zone via Instances.AggregatedList before any per-instance follow-up
+// (firewall tag, SSH key).
 
 import (
 	"fmt"
@@ -37,15 +24,7 @@ import (
 	raw "google.golang.org/api/compute/v1"
 )
 
-// zonePathSegment matches the "/zones/<zone>" segment of a GCE
-// self-link path. Used by zoneFromInstanceURL to extract placement
-// from an instance's self-link returned by AggregatedList.
 var zonePathSegment = regexp.MustCompile(`/zones/([^/]+)`)
-
-// machineTypePathSegment matches the ".../machineTypes/<type>" tail of
-// an instance's machineType self-link. Used by machineTypeFromInstanceURL
-// to write the resolved machine type back to Driver state for metric
-// labels downstream.
 var machineTypePathSegment = regexp.MustCompile(`/machineTypes/([^/]+)$`)
 
 // createInstanceViaBulkInsert provisions a single VM via
@@ -87,12 +66,8 @@ func (c *ComputeUtil) createInstanceViaBulkInsert(d *Driver) error {
 		return fmt.Errorf("bulkInsert for %q did not complete: %w", c.instanceName, err)
 	}
 
-	// The region Operation completing signals GCP has settled placement
-	// and started the create. To target subsequent calls (Instances.Get,
-	// SetTags, SetMetadata) we need the zone the VM landed in. The
-	// Operation's TargetLink isn't reliable for that, so locate the
-	// instance by name via AggregatedList and parse the zone from its
-	// self-link.
+	// BulkInsert's Operation TargetLink doesn't carry placement; look
+	// the instance up by name to find the zone for subsequent calls.
 	zone, err := c.discoverInstanceZone()
 	if err != nil {
 		return fmt.Errorf("discovering zone for bulkInsert-placed instance %q: %w", c.instanceName, err)
@@ -104,11 +79,9 @@ func (c *ComputeUtil) createInstanceViaBulkInsert(d *Driver) error {
 	return c.finishPostCreate(d)
 }
 
-// buildBulkInsertInstanceProperties assembles the InstanceProperties
-// template used by bulkInsert. Mirrors the body the direct path builds
-// for Instances.Insert, but typed as InstanceProperties (which lacks
-// the Name / Zone fields the direct path sets — those come from the
-// bulkInsert request envelope / placement decision).
+// buildBulkInsertInstanceProperties mirrors the direct-path Instances.Insert
+// body as an InstanceProperties (no Name / Zone — bulkInsert envelope
+// owns those).
 func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.InstanceProperties, error) {
 	var net string
 	if strings.Contains(d.Network, "/networks/") {
@@ -122,9 +95,8 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.Instanc
 		return nil, err
 	}
 
-	// MachineType in the template is a bare type name (not a zonal URL):
-	// bulkInsert resolves it against the actual placement zone. If a
-	// flex policy is set the per-selection MachineTypes override this.
+	// MachineType is a bare name (no zonal URL); bulkInsert resolves it
+	// against the placement zone, and flex selections override it.
 	props := &raw.InstanceProperties{
 		Description:    "docker host vm",
 		MachineType:    d.MachineType,
@@ -138,10 +110,8 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.Instanc
 				InitializeParams: &raw.AttachedDiskInitializeParams{
 					SourceImage: "https://www.googleapis.com/compute/v1/projects/" + d.MachineImage,
 					DiskSizeGb:  int64(d.DiskSize),
-					// Bare disk-type name. bulkInsert evaluates this
-					// against the chosen zone post-placement; passing a
-					// zonal URL here would either over-constrain
-					// placement or be rejected as inconsistent.
+					// Bare disk-type name (zonal URL would over-constrain
+					// or be rejected by bulkInsert).
 					DiskType: c.diskTypeURL,
 					Labels:   parseLabels(d),
 				},
@@ -189,19 +159,14 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.Instanc
 		})
 	}
 
-	// Note: --google-address (static IP), --google-accelerator. Both
-	// imply a specific zone (acceleratorType is a zonal resource, static
-	// addresses are regional but pin the NIC), which conflicts with
-	// bulkInsert's zone-at-placement-time semantics. The flag validator
-	// rejects them with --google-region; if we reach here they were
-	// silently dropped from the request body to avoid an API error.
+	// --google-address and --google-accelerator imply a specific zone;
+	// rejected upstream by the flag validator in bulkInsert mode.
 
 	return props, nil
 }
 
-// buildLocationPolicy returns a LocationPolicy assembled from the
-// --google-location-zone flags, or nil when the operator left them
-// empty (GCP then picks freely within the region).
+// buildLocationPolicy returns nil when no zones / target-shape are
+// configured (GCP picks freely within the region).
 func (c *ComputeUtil) buildLocationPolicy() *raw.LocationPolicy {
 	if len(c.locationZones) == 0 && c.locationTargetShape == "" {
 		return nil
@@ -223,11 +188,9 @@ func (c *ComputeUtil) buildLocationPolicy() *raw.LocationPolicy {
 	return policy
 }
 
-// parseLocationZoneEntry splits a "zone[:preference]" entry into its
-// parts, defaulting preference to ALLOW when unset. Unknown preferences
-// are passed through to GCP (which will reject the request) rather than
-// silently coerced — surfacing the typo as an API error keeps the
-// configuration contract honest.
+// parseLocationZoneEntry splits "zone[:preference]"; defaults to ALLOW.
+// Unknown preferences pass through verbatim — GCP rejects them with a
+// clear error message rather than us silently coercing.
 func parseLocationZoneEntry(entry string) (zone, preference string) {
 	if i := strings.IndexByte(entry, ':'); i >= 0 {
 		return entry[:i], strings.ToUpper(entry[i+1:])
@@ -235,15 +198,10 @@ func parseLocationZoneEntry(entry string) (zone, preference string) {
 	return entry, "ALLOW"
 }
 
-// buildInstanceFlexibilityPolicy assembles the flex policy from the
-// --google-flex-machine-type flag, or returns nil when no flex
-// selections were configured (the bulkInsert call then uses the single
-// machine type from InstanceProperties.MachineType).
-//
-// Each occurrence of the flag becomes one InstanceSelection with rank
-// equal to its 0-indexed position. The selection's key is an arbitrary
-// RFC1035 string; we use "rank-N" so server-side error messages refer
-// back to the operator's input order.
+// buildInstanceFlexibilityPolicy returns nil when no flex types are
+// configured. Each --google-flex-machine-type becomes one InstanceSelection
+// with rank = occurrence order. Selection keys are "rank-N" so GCP error
+// messages refer back to the operator's input order.
 func (c *ComputeUtil) buildInstanceFlexibilityPolicy() *raw.InstanceFlexibilityPolicy {
 	if len(c.flexMachineTypes) == 0 {
 		return nil
@@ -322,14 +280,9 @@ func (c *ComputeUtil) finishPostCreate(d *Driver) error {
 }
 
 // syncDriverStateFromInstance populates Driver.ResolvedZone and
-// Driver.ResolvedMachineType from a just-created instance. Called
-// after a successful create so the resolved values get persisted by
-// libmachine alongside the operator-intent Zone / MachineType fields.
-//
-// Best-effort: parsing failures log and leave the field empty rather
-// than blocking post-create. The empty case (no resolved value) is
-// handled by ComputeUtil's zone fallback (ResolvedZone || Zone) and
-// by gitlab-runner!6740 (ResolvedMachineType || MachineType).
+// Driver.ResolvedMachineType from a just-created instance. Best-effort:
+// parsing failures log and leave the field empty; the zone fallback
+// in ComputeUtil and gitlab-runner!6740 handle the empty case.
 func (c *ComputeUtil) syncDriverStateFromInstance(d *Driver, instance *raw.Instance) {
 	if instance == nil {
 		return
@@ -347,11 +300,9 @@ func (c *ComputeUtil) syncDriverStateFromInstance(d *Driver, instance *raw.Insta
 	}
 }
 
-// zoneFromInstanceURL parses the zone segment from a compute self-link
-// of the form ".../zones/<zone>/instances/<name>". Parses with net/url
-// first so genuinely-malformed input fails fast rather than slipping
-// past substring matching, then pulls the zone via a tight regex on
-// the path.
+// zoneFromInstanceURL parses the zone from ".../zones/<zone>/instances/<name>"
+// (or ".../zones/<zone>"). net/url validates the input first, then a
+// path regex extracts the segment.
 func zoneFromInstanceURL(rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -378,27 +329,15 @@ func machineTypeFromInstanceURL(rawURL string) (string, error) {
 	return m[1], nil
 }
 
-// warnAboutIgnoredFlagsInBulkInsertMode walks the driver flags that
-// bulkInsert ignores or overrides and logs a single warning per
-// non-default value. Makes migration friction visible: operators
-// copying a working direct-create config into bulkInsert mode see
-// exactly which flags now have different semantics.
+// warnAboutIgnoredFlagsInBulkInsertMode logs once per non-default flag
+// that bulkInsert overrides or rejects, so operator migration from the
+// direct path surfaces which flags now have different semantics.
 func (c *ComputeUtil) warnAboutIgnoredFlagsInBulkInsertMode(d *Driver) {
 	ignored := map[string]bool{
-		// --google-zone is overridden by the location policy; operator
-		// intent in this flag is silently ignored unless it happens to
-		// be one of the LocationZones.
-		"google-zone": d.Zone != "" && d.Zone != defaultZone,
-		// --google-machine-type is overridden by the flex policy when
-		// one is set; without flex it's used as the single shape.
-		"google-machine-type": len(d.FlexMachineTypes) > 0 && d.MachineType != "" && d.MachineType != defaultMachineType,
-		// --google-address (static IP) doesn't survive zone selection
-		// at create time — pinning to a specific NIC conflicts with
-		// bulkInsert picking a zone post-hoc.
-		"google-address": d.Address != "",
-		// --google-accelerator (GPU/TPU) requires a zone-specific
-		// resource URL; we can't construct it before placement.
-		"google-accelerator": d.Accelerator != "",
+		"google-zone":         d.Zone != "" && d.Zone != defaultZone,                                                     // location policy decides
+		"google-machine-type": len(d.FlexMachineTypes) > 0 && d.MachineType != "" && d.MachineType != defaultMachineType, // flex policy decides
+		"google-address":      d.Address != "",                                                                           // NIC pin conflicts with placement-time zone
+		"google-accelerator":  d.Accelerator != "",                                                                       // requires zone-specific resource URL
 	}
 	for flag, set := range ignored {
 		if set {

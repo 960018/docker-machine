@@ -67,64 +67,38 @@ type Driver struct {
 	MaintenancePolicy     string
 	SkipFirewall          bool
 
-	// BulkInsert is the explicit opt-in for bulkInsert mode. When true
-	// the create path uses RegionInstances.BulkInsert with LocationPolicy
-	// and (optionally) InstanceFlexibilityPolicy; lifecycle operations
-	// otherwise run against the resolved zone the same way as direct mode.
-	// Requires Region; mutually exclusive with --google-zone.
-	//
-	// Why this is a separate boolean rather than implicit from Region:
-	// Region is a generic field other code paths might want (no future
-	// callers today, but the overload would be confusing). The explicit
-	// opt-in makes the provisioning channel grep-able in both config
-	// files and on-disk Driver state, and keeps the validation
-	// straightforward.
+	// BulkInsert is the explicit opt-in for bulkInsert mode. Separate
+	// boolean rather than inferred from Region: keeps the provisioning
+	// channel grep-able in config and on-disk Driver state.
 	BulkInsert bool
 
-	// Region is the GCP region for bulkInsert mode. Required when
-	// BulkInsert is true; ignored otherwise. The actual zone within
-	// this region is chosen by GCP at create time from LocationZones
-	// (if set) and written back to ResolvedZone after placement.
+	// Region is required when BulkInsert is true; ignored otherwise.
+	// The actual zone is chosen by GCP at create time from LocationZones
+	// and written back to ResolvedZone after placement.
 	Region string
 
-	// FlexMachineTypes is a ranked list of GCE machine types passed to
-	// bulkInsert as InstanceFlexibilityPolicy.InstanceSelections. First
-	// entry = rank 0 (most preferred). GCP attempts the highest-rank
-	// type first and falls back to the next on capacity errors. Pure
-	// machine-type names ("n2-standard-2"), no URLs. Empty means no
-	// flex policy is sent (single machine type from --google-machine-type).
+	// FlexMachineTypes is the ranked list of GCE machine types for
+	// InstanceFlexibilityPolicy.InstanceSelections. First entry =
+	// rank 0; GCP falls back to the next on capacity errors. Bare
+	// machine-type names ("n2-standard-2"), no URLs.
 	FlexMachineTypes []string
 
-	// LocationZones constrains bulkInsert's zone selection. Each entry
-	// is "zone" or "zone:PREFERENCE" where preference is ALLOW (default),
-	// PREFERRED, or DENY. Empty means GCP picks any zone in Region.
+	// LocationZones constrains zone selection. Each entry is
+	// "zone[:PREFERENCE]" (ALLOW / PREFERRED / DENY); empty means GCP
+	// picks any zone in Region.
 	LocationZones []string
 
-	// LocationTargetShape controls how bulkInsert distributes when
-	// count > 1. One of ANY, ANY_SINGLE_ZONE, BALANCED. Empty defaults
-	// to ANY. With count=1 (the docker-machine flow today) this is
-	// largely cosmetic but kept for future batching.
+	// LocationTargetShape is one of ANY / ANY_SINGLE_ZONE / BALANCED.
+	// Largely cosmetic with count=1, kept for future batching.
 	LocationTargetShape string
 
-	// ResolvedZone and ResolvedMachineType carry post-create-discovered
-	// values from Instances.Get, populated by syncDriverStateFromInstance
-	// in finishPostCreate. Empty in direct-create mode (where Zone /
-	// MachineType are already ground truth).
-	//
-	// Why both exist alongside Zone / MachineType:
-	//   - Zone / MachineType retain operator intent (flag value or
-	//     default). For direct-create callers they're authoritative.
-	//   - Under bulkInsert mode GCP picks the actual zone and (with a
-	//     flex policy) the actual machine type. Resolved* carries that.
-	//
-	// Consumers:
-	//   - ComputeUtil construction prefers ResolvedZone over Zone so
-	//     subsequent operations (Remove, Stop, GetIP, …) target the
-	//     right zone after a bulkInsert create even when --google-zone
-	//     wasn't supplied.
-	//   - gitlab-runner!6740 reads ResolvedMachineType for the
-	//     target_machine_type metric label, falling back to MachineType
-	//     for direct-create callers where the two are the same.
+	// ResolvedZone and ResolvedMachineType carry the values GCP actually
+	// picked, populated by syncDriverStateFromInstance after a successful
+	// create. Empty in direct mode (Zone / MachineType are reality there).
+	// ComputeUtil construction prefers ResolvedZone over Zone so per-
+	// instance operations target the right zone after reload from disk;
+	// gitlab-runner!6740 reads ResolvedMachineType for the target_*
+	// metric labels.
 	ResolvedZone        string
 	ResolvedMachineType string
 
@@ -455,9 +429,8 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 			return errors.New("--google-bulk-insert and --google-zone are mutually exclusive: bulkInsert picks the zone from --google-location-zone")
 		}
 	} else {
-		// All other bulkInsert flags only have meaning under
-		// --google-bulk-insert. Reject in direct-create mode rather
-		// than silently dropping, so operators see typos.
+		// Reject bulkInsert-only flags in direct mode rather than
+		// silently dropping, so typos surface.
 		if len(d.FlexMachineTypes) > 0 {
 			return errors.New("--google-flex-machine-type requires --google-bulk-insert")
 		}
@@ -539,10 +512,6 @@ func (d *Driver) PreCreateCheck() error {
 	return nil
 }
 
-// usesBulkInsert reports whether the driver was configured to provision
-// via RegionInstances.BulkInsert rather than direct Instances.Insert.
-// Gated on the explicit --google-bulk-insert opt-in, not the mere
-// presence of Region — keeps the dispatch unambiguous and grep-able.
 func (d *Driver) usesBulkInsert() bool {
 	return d.BulkInsert
 }
