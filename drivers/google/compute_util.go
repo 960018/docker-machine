@@ -47,6 +47,10 @@ type ComputeUtil struct {
 	maintenancePolicy string
 	skipFirewall      bool
 
+	// bulkInsert mirrors Driver.BulkInsert: explicit opt-in for the
+	// RegionInstances.BulkInsert path. Drives mode dispatch.
+	bulkInsert bool
+
 	// regionExplicit holds an operator-supplied region (Driver.Region).
 	// Used by region() when zone is empty, i.e. bulkInsert mode pre-zone-
 	// discovery. Named with the "Explicit" suffix because region() is
@@ -54,8 +58,7 @@ type ComputeUtil struct {
 	regionExplicit string
 
 	// flexMachineTypes and locationZones / locationTargetShape carry the
-	// bulkInsert flex policy and location policy. Empty when the driver
-	// is in direct-create mode (Region not set).
+	// bulkInsert flex policy and location policy. Empty in direct mode.
 	flexMachineTypes    []string
 	locationZones       []string
 	locationTargetShape string
@@ -135,6 +138,7 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		accelerator:                driver.Accelerator,
 		maintenancePolicy:          driver.MaintenancePolicy,
 		skipFirewall:               driver.SkipFirewall,
+		bulkInsert:          driver.BulkInsert,
 		regionExplicit:      driver.Region,
 		flexMachineTypes:    driver.FlexMachineTypes,
 		locationZones:       driver.LocationZones,
@@ -146,7 +150,7 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 // (which don't always hold a driver reference) can dispatch on
 // provisioning mode.
 func (c *ComputeUtil) usesBulkInsert() bool {
-	return c.regionExplicit != ""
+	return c.bulkInsert
 }
 
 func (c *ComputeUtil) acceleratorCountAndType() (int, string) {

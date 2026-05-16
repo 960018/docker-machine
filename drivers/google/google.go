@@ -67,17 +67,24 @@ type Driver struct {
 	MaintenancePolicy     string
 	SkipFirewall          bool
 
-	// Region switches the create path from Instances.Insert to
-	// RegionInstances.BulkInsert. The actual zone is chosen by GCP at
-	// create time from the LocationZones list, and the machine type is
-	// chosen from FlexMachineTypes if set. Once placed, lifecycle
-	// operations (Stop / Start / Remove / GetIP / GetState) run against
-	// the resolved zone exactly as the direct path.
+	// BulkInsert is the explicit opt-in for bulkInsert mode. When true
+	// the create path uses RegionInstances.BulkInsert with LocationPolicy
+	// and (optionally) InstanceFlexibilityPolicy; lifecycle operations
+	// otherwise run against the resolved zone the same way as direct mode.
+	// Requires Region; mutually exclusive with --google-zone.
 	//
-	// Region and Zone are mutually exclusive on the input side: pick a
-	// region for bulkInsert mode or a zone for direct Instances.Insert,
-	// not both. The discovered zone is written back to ResolvedZone /
-	// Driver state after create.
+	// Why this is a separate boolean rather than implicit from Region:
+	// Region is a generic field other code paths might want (no future
+	// callers today, but the overload would be confusing). The explicit
+	// opt-in makes the provisioning channel grep-able in both config
+	// files and on-disk Driver state, and keeps the validation
+	// straightforward.
+	BulkInsert bool
+
+	// Region is the GCP region for bulkInsert mode. Required when
+	// BulkInsert is true; ignored otherwise. The actual zone within
+	// this region is chosen by GCP at create time from LocationZones
+	// (if set) and written back to ResolvedZone after placement.
 	Region string
 
 	// FlexMachineTypes is a ranked list of GCE machine types passed to
@@ -320,9 +327,14 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "Skip firewall setup",
 			EnvVar: "GOOGLE_SKIP_FIREWALL_CREATE",
 		},
+		mcnflag.BoolFlag{
+			Name:   "google-bulk-insert",
+			Usage:  "(Experimental) Provision via RegionInstances.BulkInsert with LocationPolicy / InstanceFlexibilityPolicy rather than zonal Instances.Insert. Requires --google-region; mutually exclusive with --google-zone.",
+			EnvVar: "GOOGLE_BULK_INSERT",
+		},
 		mcnflag.StringFlag{
 			Name:   "google-region",
-			Usage:  "(Experimental) GCP region. When set, provisioning uses RegionInstances.BulkInsert with the configured zones / flex machine types. Mutually exclusive with --google-zone.",
+			Usage:  "(Experimental) GCP region for bulkInsert mode. Required when --google-bulk-insert is set.",
 			EnvVar: "GOOGLE_REGION",
 		},
 		mcnflag.StringSliceFlag{
@@ -429,22 +441,32 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.SSHPort = 22
 	d.SetSwarmConfigFromFlags(flags)
 
+	d.BulkInsert = flags.Bool("google-bulk-insert")
 	d.Region = flags.String("google-region")
 	d.FlexMachineTypes = flags.StringSlice("google-flex-machine-type")
 	d.LocationZones = flags.StringSlice("google-location-zone")
 	d.LocationTargetShape = flags.String("google-location-target-shape")
 
-	if d.Region != "" && d.Zone != "" && d.Zone != defaultZone {
-		return errors.New("--google-region and --google-zone are mutually exclusive: pick a region for bulkInsert mode or a zone for direct create")
-	}
-	if d.Region == "" && len(d.FlexMachineTypes) > 0 {
-		return errors.New("--google-flex-machine-type requires --google-region")
-	}
-	if d.Region == "" && len(d.LocationZones) > 0 {
-		return errors.New("--google-location-zone requires --google-region")
-	}
-	if d.Region == "" && d.LocationTargetShape != "" {
-		return errors.New("--google-location-target-shape requires --google-region")
+	if d.BulkInsert {
+		if d.Region == "" {
+			return errors.New("--google-bulk-insert requires --google-region")
+		}
+		if d.Zone != "" && d.Zone != defaultZone {
+			return errors.New("--google-bulk-insert and --google-zone are mutually exclusive: bulkInsert picks the zone from --google-location-zone")
+		}
+	} else {
+		// All other bulkInsert flags only have meaning under
+		// --google-bulk-insert. Reject in direct-create mode rather
+		// than silently dropping, so operators see typos.
+		if len(d.FlexMachineTypes) > 0 {
+			return errors.New("--google-flex-machine-type requires --google-bulk-insert")
+		}
+		if len(d.LocationZones) > 0 {
+			return errors.New("--google-location-zone requires --google-bulk-insert")
+		}
+		if d.LocationTargetShape != "" {
+			return errors.New("--google-location-target-shape requires --google-bulk-insert")
+		}
 	}
 	if shape := d.LocationTargetShape; shape != "" && shape != "ANY" && shape != "ANY_SINGLE_ZONE" && shape != "BALANCED" {
 		return fmt.Errorf("--google-location-target-shape must be one of ANY, ANY_SINGLE_ZONE, BALANCED (got %q)", shape)
@@ -519,10 +541,10 @@ func (d *Driver) PreCreateCheck() error {
 
 // usesBulkInsert reports whether the driver was configured to provision
 // via RegionInstances.BulkInsert rather than direct Instances.Insert.
-// Region presence is the trigger: bulkInsert is region-scoped and the
-// configured zones (LocationZones) live inside that region.
+// Gated on the explicit --google-bulk-insert opt-in, not the mere
+// presence of Region — keeps the dispatch unambiguous and grep-able.
 func (d *Driver) usesBulkInsert() bool {
-	return d.Region != ""
+	return d.BulkInsert
 }
 
 // Create creates a GCE VM instance acting as a docker host.
