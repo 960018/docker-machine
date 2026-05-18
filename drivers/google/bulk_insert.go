@@ -32,7 +32,7 @@ var machineTypePathSegment = regexp.MustCompile(`/machineTypes/([^/]+)$`)
 // policies, waits for the operation to complete, discovers the chosen
 // zone, and hands off to the standard post-create configuration.
 func (c *ComputeUtil) createInstanceViaBulkInsert(d *Driver) error {
-	c.warnAboutIgnoredFlagsInBulkInsertMode(d)
+	c.warnAboutMachineTypeInBulkInsertMode(d)
 
 	log.Infof("Creating instance via bulkInsert in %q", c.region())
 
@@ -333,19 +333,16 @@ func machineTypeFromInstanceURL(rawURL string) (string, error) {
 	return m[1], nil
 }
 
-// warnAboutIgnoredFlagsInBulkInsertMode logs once per non-default flag
-// that bulkInsert overrides, so operator migration from the direct
-// path surfaces which flags now have different semantics. Flags that
-// bulkInsert outright rejects (e.g. --google-address) are blocked at
+// warnAboutMachineTypeInBulkInsertMode surfaces the interaction between
+// --google-machine-type and --google-flex-machine-type. Flags that
+// bulkInsert outright rejects (--google-address) are blocked at
 // flag-validation time, not warned about here.
-func (c *ComputeUtil) warnAboutIgnoredFlagsInBulkInsertMode(d *Driver) {
-	ignored := map[string]bool{
-		"google-zone":         d.Zone != "" && d.Zone != defaultZone,                                                     // location policy decides
-		"google-machine-type": len(d.FlexMachineTypes) > 0 && d.MachineType != "" && d.MachineType != defaultMachineType, // flex policy decides
+func (c *ComputeUtil) warnAboutMachineTypeInBulkInsertMode(d *Driver) {
+	if len(d.FlexMachineTypes) == 0 {
+		log.Warnf("bulkInsert without --google-flex-machine-type: falling back to --google-machine-type=%q. No machine-type fallback on stockout.", d.MachineType)
+		return
 	}
-	for flag, set := range ignored {
-		if set {
-			log.Warnf("Flag --%s is ignored or overridden in bulkInsert mode (--google-region is set)", flag)
-		}
+	if d.MachineType != "" && d.MachineType != defaultMachineType {
+		log.Warnf("--google-machine-type=%q is ignored in bulkInsert mode when --google-flex-machine-type is set; only the flex list is honoured.", d.MachineType)
 	}
 }
