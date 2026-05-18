@@ -74,12 +74,12 @@ var (
 	networkProjectRegex = regexp.MustCompile(apiURL + `(?P<project_name>[^/]+)/global/networks/(?P<network_name>[A-Za-z-]+)`)
 )
 
-// effectiveZone prefers Driver.ResolvedZone (the post-create-discovered
-// placement, persisted by libmachine) over Driver.Zone, so per-instance
-// API calls target the actual zone after a process restart reloads
-// Driver state from disk. Falls back to Zone in direct mode.
+// effectiveZone returns the zone per-instance API calls should target.
+// In bulkInsert mode Driver.Zone is the libmachine default and tells us
+// nothing; ResolvedZone is the truth (empty means post-create discovery
+// failed, surfaces as a clear API error rather than wrong-zone calls).
 func effectiveZone(d *Driver) string {
-	if d.ResolvedZone != "" {
+	if d.BulkInsert {
 		return d.ResolvedZone
 	}
 	return d.Zone
