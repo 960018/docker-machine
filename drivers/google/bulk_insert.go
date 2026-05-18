@@ -258,23 +258,16 @@ func (c *ComputeUtil) discoverInstanceZone() (string, error) {
 	return "", fmt.Errorf("instance %q not found in any zone after bulkInsert (operation completed but aggregatedList did not return it)", c.instanceName)
 }
 
-// finishPostCreate runs the create-time work that's identical between
-// the direct path and bulkInsert: look the instance up by name, sync
-// the discovered placement back into Driver state so libmachine
-// persists it, add the firewall tag, push the SSH public key.
+// finishPostCreate runs the post-bulkInsert work: fetch the instance,
+// record the flex-picked machine type, add the firewall tag, push the
+// SSH key. Zone is already set by discoverInstanceZone upstream.
 func (c *ComputeUtil) finishPostCreate(d *Driver) error {
 	instance, err := c.instance()
 	if err != nil {
 		return fmt.Errorf("looking up just-created instance %q: %w", c.instanceName, err)
 	}
 
-	// bulkInsert (and the flex policy in particular) owns machine-type
-	// and zone placement; the operator's --google-machine-type / --google-zone
-	// flags only seeded the policy. Write the actual values back to
-	// Driver so they get persisted to config.json and metric labels
-	// downstream (gitlab-runner!6740's target_machine_type / target_zone)
-	// reflect reality rather than the operator's input.
-	c.syncDriverStateFromInstance(d, instance)
+	c.syncResolvedMachineType(d, instance)
 
 	if err := c.addFirewallTag(instance); err != nil {
 		return fmt.Errorf("adding firewall tag to bulkInsert instance %q: %w", c.instanceName, err)
@@ -283,11 +276,9 @@ func (c *ComputeUtil) finishPostCreate(d *Driver) error {
 	return c.uploadSSHKey(instance, d.GetSSHKeyPath())
 }
 
-// syncDriverStateFromInstance populates Driver.ResolvedZone and
-// Driver.ResolvedMachineType from a just-created instance. Best-effort:
-// parsing failures log and leave the field empty; the zone fallback
-// in ComputeUtil and gitlab-runner!6740 handle the empty case.
-func (c *ComputeUtil) syncDriverStateFromInstance(d *Driver, instance *raw.Instance) {
+// syncResolvedMachineType records the machine type GCP actually placed.
+// Best-effort: a parse failure logs and leaves the field empty.
+func (c *ComputeUtil) syncResolvedMachineType(d *Driver, instance *raw.Instance) {
 	if instance == nil {
 		return
 	}
@@ -295,12 +286,6 @@ func (c *ComputeUtil) syncDriverStateFromInstance(d *Driver, instance *raw.Insta
 		d.ResolvedMachineType = mt
 	} else {
 		log.Warnf("could not parse machine type from instance URL %q: %s", instance.MachineType, err)
-	}
-	if zone, err := zoneFromInstanceURL(instance.Zone); err == nil {
-		d.ResolvedZone = zone
-		c.zone = zone
-	} else {
-		log.Warnf("could not parse zone from instance URL %q: %s", instance.Zone, err)
 	}
 }
 

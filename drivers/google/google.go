@@ -412,6 +412,9 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.LocationZones = flags.StringSlice("google-location-zone")
 
 	if d.BulkInsert {
+		if d.UseExisting {
+			return errors.New("--google-bulk-insert and --google-use-existing are mutually exclusive: bulkInsert provisions a new VM")
+		}
 		if d.Region == "" {
 			return errors.New("--google-bulk-insert requires --google-region")
 		}
@@ -420,6 +423,17 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		}
 		if d.Address != "" {
 			return errors.New("--google-address is not supported with --google-bulk-insert: bulkInsert does not accept custom external IPs")
+		}
+		for _, entry := range d.FlexMachineTypes {
+			if strings.TrimSpace(entry) == "" {
+				return errors.New("--google-flex-machine-type entries must be non-empty machine-type names")
+			}
+		}
+		for _, entry := range d.LocationZones {
+			zone, _ := parseLocationZoneEntry(entry)
+			if strings.TrimSpace(zone) == "" {
+				return fmt.Errorf("--google-location-zone entry %q has an empty zone (expected zone[:PREFERENCE])", entry)
+			}
 		}
 	} else {
 		if len(d.FlexMachineTypes) > 0 {
@@ -604,6 +618,11 @@ func (d *Driver) Start() error {
 	}
 
 	if instance == nil {
+		// bulkInsert can't reuse the existing disk: a fresh BulkInsert
+		// picks a new zone and builds a new disk, orphaning the old one.
+		if d.usesBulkInsert() {
+			return fmt.Errorf("instance %q not found and --google-bulk-insert mode does not support resurrecting from an existing disk; re-create the machine", d.MachineName)
+		}
 		if err = c.createInstance(d); err != nil {
 			return err
 		}

@@ -47,9 +47,6 @@ type ComputeUtil struct {
 	maintenancePolicy string
 	skipFirewall      bool
 
-	// bulkInsert mirrors Driver.BulkInsert. Drives mode dispatch.
-	bulkInsert bool
-
 	// regionExplicit mirrors Driver.Region; used by region() when zone is
 	// empty (bulkInsert mode pre-zone-discovery). "Explicit" suffix
 	// distinguishes the field from the region() method.
@@ -131,18 +128,10 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		accelerator:             driver.Accelerator,
 		maintenancePolicy:       driver.MaintenancePolicy,
 		skipFirewall:            driver.SkipFirewall,
-		bulkInsert:              driver.BulkInsert,
 		regionExplicit:          driver.Region,
 		flexMachineTypes:        driver.FlexMachineTypes,
 		locationZones:           driver.LocationZones,
 	}, nil
-}
-
-// usesBulkInsert mirrors Driver.usesBulkInsert so ComputeUtil callers
-// (which don't always hold a driver reference) can dispatch on
-// provisioning mode.
-func (c *ComputeUtil) usesBulkInsert() bool {
-	return c.bulkInsert
 }
 
 func (c *ComputeUtil) acceleratorCountAndType() (int, string) {
@@ -356,11 +345,11 @@ func (c *ComputeUtil) instance() (*raw.Instance, error) {
 }
 
 // createInstance creates a GCE VM instance, either directly via
-// Instances.Insert (zonal) or, when the driver is configured with
-// --google-region, via RegionInstances.BulkInsert. The bulkInsert path
-// supports a zone preference list (LocationPolicy) and a ranked machine-
-// type fallback (InstanceFlexibilityPolicy); GCP picks the first
-// combination it can fulfil. See Driver.usesBulkInsert.
+// Instances.Insert (zonal) or, when --google-bulk-insert is set, via
+// RegionInstances.BulkInsert. The bulkInsert path supports a zone
+// preference list (LocationPolicy) and a ranked machine-type fallback
+// (InstanceFlexibilityPolicy); GCP picks the first combination it can
+// fulfil. See Driver.usesBulkInsert.
 func (c *ComputeUtil) createInstance(d *Driver) error {
 	if d.usesBulkInsert() {
 		return c.createInstanceViaBulkInsert(d)

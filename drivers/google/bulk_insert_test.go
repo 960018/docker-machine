@@ -160,9 +160,9 @@ func TestMachineTypeFromInstanceURL(t *testing.T) {
 
 func TestBuildBulkInsertInstanceProperties_BareNamesNoZone(t *testing.T) {
 	// Critical bulkInsert invariant: InstanceProperties must not pin to
-	// a specific zone (MachineType / DiskType must be bare names, not
-	// zonal URLs), so GCP can resolve them against the placement zone
-	// chosen by the LocationPolicy.
+	// a specific zone (MachineType / DiskType / AcceleratorType must be
+	// bare names, not zonal URLs), so GCP can resolve them against the
+	// placement zone chosen by the LocationPolicy.
 	d := &Driver{
 		MachineType:    "n2-standard-2",
 		MachineImage:   "ubuntu-os-cloud/global/images/ubuntu-2204",
@@ -177,6 +177,7 @@ func TestBuildBulkInsertInstanceProperties_BareNamesNoZone(t *testing.T) {
 		networkProject: "p",
 		diskTypeURL:    "pd-balanced",
 		globalURL:      apiURL + "p/global",
+		accelerator:    "count=1,type=nvidia-tesla-t4",
 	}
 
 	props, err := c.buildBulkInsertInstanceProperties(d)
@@ -192,6 +193,14 @@ func TestBuildBulkInsertInstanceProperties_BareNamesNoZone(t *testing.T) {
 	require.NotNil(t, props.Disks[0].InitializeParams)
 	assert.Equal(t, "pd-balanced", props.Disks[0].InitializeParams.DiskType)
 	assert.NotContains(t, props.Disks[0].InitializeParams.DiskType, "/zones/")
+
+	// AcceleratorType: bare name (the direct path uses a zonal URL here;
+	// bulkInsert must not, or GCP rejects the InstanceProperties).
+	require.Len(t, props.GuestAccelerators, 1)
+	assert.Equal(t, int64(1), props.GuestAccelerators[0].AcceleratorCount)
+	assert.Equal(t, "nvidia-tesla-t4", props.GuestAccelerators[0].AcceleratorType)
+	assert.NotContains(t, props.GuestAccelerators[0].AcceleratorType, "/zones/")
+	assert.NotContains(t, props.GuestAccelerators[0].AcceleratorType, "/acceleratorTypes/")
 
 	// Network is global; subnetwork unset so no regional URL leak.
 	require.Len(t, props.NetworkInterfaces, 1)
