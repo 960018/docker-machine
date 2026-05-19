@@ -579,10 +579,6 @@ func (d *Driver) createInstanceWithFallback(c *ComputeUtil) error {
 
 	log.Warnf("Primary create failed (%v); trying fallback config", err)
 
-	if rmErr := c.deleteInstance(); rmErr != nil && !isNotFound(rmErr) {
-		log.Debugf("Cleanup before fallback returned %v; continuing", rmErr)
-	}
-
 	if d.FallbackMachineType != "" {
 		d.MachineType = d.FallbackMachineType
 	}
