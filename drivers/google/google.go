@@ -88,6 +88,11 @@ type Driver struct {
 	// picks any zone in Region.
 	LocationZones []string
 
+	// Fallback config: tried once if the primary create fails.
+	FallbackMachineType      string
+	FallbackDiskType         string
+	FallbackFlexMachineTypes []string
+
 	// ResolvedZone and ResolvedMachineType carry the values GCP actually
 	// picked, populated by syncDriverStateFromInstance after a successful
 	// create. Empty in direct mode (Zone / MachineType are reality there).
@@ -317,6 +322,21 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "(Experimental) Zone constraint for bulkInsert. Format: zone[:PREFERENCE] where preference is ALLOW (default), PREFERRED, or DENY. Repeat per zone. Empty = any zone in --google-region.",
 			EnvVar: "GOOGLE_LOCATION_ZONE",
 		},
+		mcnflag.StringFlag{
+			Name:   "google-fallback-machine-type",
+			Usage:  "(Experimental) Machine type for the fallback attempt if the primary create fails. Empty = no fallback.",
+			EnvVar: "GOOGLE_FALLBACK_MACHINE_TYPE",
+		},
+		mcnflag.StringFlag{
+			Name:   "google-fallback-disk-type",
+			Usage:  "(Experimental) Disk type for the fallback attempt. Empty = keep the primary disk type.",
+			EnvVar: "GOOGLE_FALLBACK_DISK_TYPE",
+		},
+		mcnflag.StringSliceFlag{
+			Name:   "google-fallback-flex-machine-type",
+			Usage:  "(Experimental) Flex machine-type list for the fallback attempt. Replaces --google-flex-machine-type. Repeat in preference order.",
+			EnvVar: "GOOGLE_FALLBACK_FLEX_MACHINE_TYPE",
+		},
 	}
 }
 
@@ -410,6 +430,10 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.Region = flags.String("google-region")
 	d.FlexMachineTypes = flags.StringSlice("google-flex-machine-type")
 	d.LocationZones = flags.StringSlice("google-location-zone")
+
+	d.FallbackMachineType = flags.String("google-fallback-machine-type")
+	d.FallbackDiskType = flags.String("google-fallback-disk-type")
+	d.FallbackFlexMachineTypes = flags.StringSlice("google-fallback-flex-machine-type")
 
 	if d.BulkInsert {
 		if d.UseExisting {
@@ -537,7 +561,49 @@ func (d *Driver) Create() error {
 	if d.UseExisting {
 		return c.configureInstance(d)
 	}
-	return c.createInstance(d)
+	return d.createInstanceWithFallback(c)
+}
+
+func (d *Driver) hasFallback() bool {
+	return d.FallbackMachineType != "" || d.FallbackDiskType != "" || len(d.FallbackFlexMachineTypes) > 0
+}
+
+func (d *Driver) createInstanceWithFallback(c *ComputeUtil) error {
+	err := c.createInstance(d)
+	if err == nil {
+		return nil
+	}
+	if !d.hasFallback() {
+		return err
+	}
+
+	log.Warnf("Primary create failed (%v); trying fallback config", err)
+
+	if rmErr := c.deleteInstance(); rmErr != nil && !isNotFound(rmErr) {
+		log.Debugf("Cleanup before fallback returned %v; continuing", rmErr)
+	}
+
+	if d.FallbackMachineType != "" {
+		d.MachineType = d.FallbackMachineType
+	}
+	if d.FallbackDiskType != "" {
+		d.DiskType = d.FallbackDiskType
+	}
+	if len(d.FallbackFlexMachineTypes) > 0 {
+		d.FlexMachineTypes = d.FallbackFlexMachineTypes
+	}
+	d.ResolvedZone = ""
+	d.ResolvedMachineType = ""
+
+	fresh, err := newComputeUtil(d)
+	if err != nil {
+		return fmt.Errorf("fallback: %w", err)
+	}
+	if err := fresh.createInstance(d); err != nil {
+		return fmt.Errorf("fallback create also failed: %w", err)
+	}
+	log.Infof("Machine created via fallback config")
+	return nil
 }
 
 // GetURL returns the URL of the remote docker daemon.
