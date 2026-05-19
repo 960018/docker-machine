@@ -127,3 +127,42 @@ func TestMetadataMapFromStringSlice(t *testing.T) {
 		})
 	}
 }
+
+func TestDriver_HasFallback(t *testing.T) {
+	cases := map[string]struct {
+		d    Driver
+		want bool
+	}{
+		"all empty":        {Driver{}, false},
+		"machine type set": {Driver{FallbackMachineType: "n2d-standard-2"}, true},
+		"disk type set":    {Driver{FallbackDiskType: "pd-balanced"}, true},
+		"flex list set":    {Driver{FallbackFlexMachineTypes: []string{"n2d-standard-2"}}, true},
+		"flex list empty":  {Driver{FallbackFlexMachineTypes: []string{}}, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.d.hasFallback())
+		})
+	}
+}
+
+func TestSetConfigFromFlags_FallbackFlags(t *testing.T) {
+	driver := NewDriver("", "")
+
+	checkFlags := &drivers.CheckDriverOptions{
+		FlagsValues: map[string]interface{}{
+			"google-project":                    "PROJECT",
+			"google-fallback-machine-type":      "n2d-standard-2",
+			"google-fallback-disk-type":         "pd-balanced",
+			"google-fallback-flex-machine-type": []string{"n2d-standard-2", "n2-standard-2"},
+		},
+		CreateFlags: driver.GetCreateFlags(),
+	}
+
+	err := driver.SetConfigFromFlags(checkFlags)
+	assert.NoError(t, err)
+	assert.Empty(t, checkFlags.InvalidFlags)
+	assert.Equal(t, "n2d-standard-2", driver.FallbackMachineType)
+	assert.Equal(t, "pd-balanced", driver.FallbackDiskType)
+	assert.Equal(t, []string{"n2d-standard-2", "n2-standard-2"}, driver.FallbackFlexMachineTypes)
+}
