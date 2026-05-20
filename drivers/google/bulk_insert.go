@@ -236,7 +236,8 @@ func parseFlexSelectionEntry(entry string) (map[string]string, error) {
 		}
 		k, v := parts[0], parts[1]
 		if !flexSelectionKeys[k] {
-			return nil, fmt.Errorf("unknown key %q (supported: machine-type, disk-type, disk-iops, disk-throughput)", k)
+			log.Warnf("--google-flex-selection: ignoring unknown key %q in %q", k, entry)
+			continue
 		}
 		opts[k] = v
 	}

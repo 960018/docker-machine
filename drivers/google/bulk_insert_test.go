@@ -103,8 +103,11 @@ func TestParseFlexSelectionEntry(t *testing.T) {
 			map[string]string{"machine-type": "n4-standard-2", "disk-type": "hyperdisk-balanced", "disk-iops": "3000", "disk-throughput": "140"}, "",
 		},
 		"missing machine-type": {"disk-type=hyperdisk-balanced", nil, "missing required key machine-type"},
-		"unknown key":          {"machine-type=n4-standard-2,foo=bar", nil, "unknown key"},
-		"missing equals":       {"n4-standard-2", nil, "is not key=value"},
+		"unknown key ignored": {
+			"machine-type=n4-standard-2,foo=bar",
+			map[string]string{"machine-type": "n4-standard-2"}, "",
+		},
+		"missing equals": {"n4-standard-2", nil, "is not key=value"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
