@@ -234,15 +234,30 @@ func parseFlexSelectionEntry(entry string) (map[string]string, error) {
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("element %q is not key=value", kv)
 		}
-		k, v := parts[0], parts[1]
+		k := strings.TrimSpace(parts[0])
+		v := strings.TrimSpace(parts[1])
 		if !flexSelectionKeys[k] {
 			log.Warnf("--google-flex-selection: ignoring unknown key %q in %q", k, entry)
 			continue
+		}
+		if v == "" {
+			return nil, fmt.Errorf("empty value for key %q", k)
+		}
+		if _, dup := opts[k]; dup {
+			return nil, fmt.Errorf("duplicate key %q", k)
 		}
 		opts[k] = v
 	}
 	if opts["machine-type"] == "" {
 		return nil, fmt.Errorf("missing required key machine-type")
+	}
+	for _, k := range []string{"disk-iops", "disk-throughput"} {
+		if s, ok := opts[k]; ok {
+			n, err := strconv.ParseInt(s, 10, 64)
+			if err != nil || n < 0 {
+				return nil, fmt.Errorf("%s %q is not a non-negative integer", k, s)
+			}
+		}
 	}
 	return opts, nil
 }
@@ -269,11 +284,7 @@ func (c *ComputeUtil) buildInstanceFlexibilityPolicy(d *Driver) (*raw.InstanceFl
 			Rank:         int64(i),
 		}
 		if opts["disk-type"] != "" {
-			disk, err := buildSelectionDiskOverride(d, opts)
-			if err != nil {
-				return nil, fmt.Errorf("--google-flex-selection %q: %w", entry, err)
-			}
-			sel.Disks = []*raw.AttachedDisk{disk}
+			sel.Disks = []*raw.AttachedDisk{buildSelectionDiskOverride(d, opts)}
 		} else if opts["disk-iops"] != "" || opts["disk-throughput"] != "" {
 			return nil, fmt.Errorf("--google-flex-selection %q: disk-iops/disk-throughput require disk-type", entry)
 		}
@@ -286,8 +297,9 @@ func (c *ComputeUtil) buildInstanceFlexibilityPolicy(d *Driver) (*raw.InstanceFl
 
 // buildSelectionDiskOverride mirrors the template's boot disk (image,
 // size, labels) with disk-type, IOPS, and throughput coming from the
-// entry's options. Merged with the template by DeviceName.
-func buildSelectionDiskOverride(d *Driver, opts map[string]string) (*raw.AttachedDisk, error) {
+// entry's options. Merged with the template by DeviceName. opts is
+// assumed to be pre-validated by parseFlexSelectionEntry.
+func buildSelectionDiskOverride(d *Driver, opts map[string]string) *raw.AttachedDisk {
 	disk := &raw.AttachedDisk{
 		Boot:       true,
 		AutoDelete: true,
@@ -302,20 +314,14 @@ func buildSelectionDiskOverride(d *Driver, opts map[string]string) (*raw.Attache
 		},
 	}
 	if s := opts["disk-iops"]; s != "" {
-		v, err := strconv.ParseInt(s, 10, 64)
-		if err != nil || v < 0 {
-			return nil, fmt.Errorf("disk-iops %q is not a non-negative integer", s)
-		}
+		v, _ := strconv.ParseInt(s, 10, 64)
 		disk.InitializeParams.ProvisionedIops = v
 	}
 	if s := opts["disk-throughput"]; s != "" {
-		v, err := strconv.ParseInt(s, 10, 64)
-		if err != nil || v < 0 {
-			return nil, fmt.Errorf("disk-throughput %q is not a non-negative integer", s)
-		}
+		v, _ := strconv.ParseInt(s, 10, 64)
 		disk.InitializeParams.ProvisionedThroughput = v
 	}
-	return disk, nil
+	return disk
 }
 
 // discoverInstanceZone finds the zone GCP placed our just-created

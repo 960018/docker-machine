@@ -102,12 +102,26 @@ func TestParseFlexSelectionEntry(t *testing.T) {
 			"machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-iops=3000,disk-throughput=140",
 			map[string]string{"machine-type": "n4-standard-2", "disk-type": "hyperdisk-balanced", "disk-iops": "3000", "disk-throughput": "140"}, "",
 		},
+		"whitespace around equals": {
+			"machine-type = n4-standard-2 , disk-type = hyperdisk-balanced",
+			map[string]string{"machine-type": "n4-standard-2", "disk-type": "hyperdisk-balanced"}, "",
+		},
+		"empty entry between commas": {
+			"machine-type=n4-standard-2,,disk-type=hyperdisk-balanced",
+			map[string]string{"machine-type": "n4-standard-2", "disk-type": "hyperdisk-balanced"}, "",
+		},
 		"missing machine-type": {"disk-type=hyperdisk-balanced", nil, "missing required key machine-type"},
 		"unknown key ignored": {
 			"machine-type=n4-standard-2,foo=bar",
 			map[string]string{"machine-type": "n4-standard-2"}, "",
 		},
-		"missing equals": {"n4-standard-2", nil, "is not key=value"},
+		"missing equals":         {"n4-standard-2", nil, "is not key=value"},
+		"empty value":            {"machine-type=n4-standard-2,disk-type=", nil, `empty value for key "disk-type"`},
+		"empty machine-type":     {"machine-type=", nil, `empty value for key "machine-type"`},
+		"duplicate key":          {"machine-type=a,machine-type=b", nil, `duplicate key "machine-type"`},
+		"non-integer iops":       {"machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-iops=abc", nil, "disk-iops"},
+		"negative iops":          {"machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-iops=-1", nil, "disk-iops"},
+		"non-integer throughput": {"machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-throughput=fast", nil, "disk-throughput"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -134,6 +148,7 @@ func TestBuildInstanceFlexibilityPolicy_PerSelectionDiskOverride(t *testing.T) {
 	d := &Driver{
 		MachineImage: "cos-cloud/global/images/family/cos-stable",
 		DiskSize:     10,
+		Labels:       []string{"team:runners", "env:ci"},
 	}
 	p, err := c.buildInstanceFlexibilityPolicy(d)
 	require.NoError(t, err)
@@ -157,6 +172,7 @@ func TestBuildInstanceFlexibilityPolicy_PerSelectionDiskOverride(t *testing.T) {
 	assert.Equal(t, int64(10), r2.Disks[0].InitializeParams.DiskSizeGb)
 	assert.Equal(t, int64(3000), r2.Disks[0].InitializeParams.ProvisionedIops)
 	assert.Equal(t, int64(140), r2.Disks[0].InitializeParams.ProvisionedThroughput)
+	assert.Equal(t, map[string]string{"team": "runners", "env": "ci"}, r2.Disks[0].InitializeParams.Labels)
 }
 
 func TestBuildInstanceFlexibilityPolicy_IopsWithoutDiskType(t *testing.T) {
