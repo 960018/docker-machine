@@ -70,7 +70,9 @@ func TestBuildInstanceFlexibilityPolicy_Ranked(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, p)
 	require.Len(t, p.InstanceSelections, 3)
-
+	require.Contains(t, p.InstanceSelections, "rank-0")
+	require.Contains(t, p.InstanceSelections, "rank-1")
+	require.Contains(t, p.InstanceSelections, "rank-2")
 	r0 := p.InstanceSelections["rank-0"]
 	r1 := p.InstanceSelections["rank-1"]
 	r2 := p.InstanceSelections["rank-2"]
@@ -155,7 +157,9 @@ func TestBuildInstanceFlexibilityPolicy_PerSelectionDiskOverride(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, p)
 	require.Len(t, p.InstanceSelections, 3)
-
+	require.Contains(t, p.InstanceSelections, "rank-0")
+	require.Contains(t, p.InstanceSelections, "rank-1")
+	require.Contains(t, p.InstanceSelections, "rank-2")
 	r0 := p.InstanceSelections["rank-0"]
 	assert.Equal(t, []string{"t2d-standard-2"}, r0.MachineTypes)
 	assert.Nil(t, r0.Disks, "bare entry must not carry a disk override")
