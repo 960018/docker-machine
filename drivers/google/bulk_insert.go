@@ -411,9 +411,8 @@ func machineTypeFromInstanceURL(rawURL string) (string, error) {
 	return m[1], nil
 }
 
-// warnAboutMachineTypeInBulkInsertMode surfaces the interaction between
 // warnAboutMachineTypeInBulkInsertMode flags --google-machine-type as
-// shadowed in bulkInsert mode (the machine-type comes from each
+// shadowed in bulkInsert mode (machine-type comes from each
 // --google-flex-selection entry).
 func (c *ComputeUtil) warnAboutMachineTypeInBulkInsertMode(d *Driver) {
 	if d.MachineType != "" && d.MachineType != defaultMachineType {
