@@ -77,11 +77,9 @@ type Driver struct {
 	// and written back to ResolvedZone after placement.
 	Region string
 
-	// FlexMachineTypes is the ranked list of GCE machine types for
-	// InstanceFlexibilityPolicy.InstanceSelections. First entry =
-	// rank 0; GCP falls back to the next on capacity errors. Bare
-	// machine-type names ("n2-standard-2"), no URLs.
-	FlexMachineTypes []string
+	// FlexSelections feeds InstanceFlexibilityPolicy.InstanceSelections.
+	// First entry = rank 0; format documented on --google-flex-selection.
+	FlexSelections []string
 
 	// LocationZones constrains zone selection. Each entry is
 	// "zone[:PREFERENCE]" (ALLOW / PREFERRED / DENY); empty means GCP
@@ -308,9 +306,9 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			EnvVar: "GOOGLE_REGION",
 		},
 		mcnflag.StringSliceFlag{
-			Name:   "google-flex-machine-type",
-			Usage:  "(Experimental) GCE machine type for bulkInsert flex policy. Format: machine-type[:k=v[,k=v...]]. Repeat in preference order: first occurrence is rank 0 (most preferred). Bare names (e.g. n4-standard-2) inherit the template disk. Options after the colon override the disk for that selection: disk-type (e.g. hyperdisk-balanced), disk-iops, disk-throughput. Example: n4-standard-2:disk-type=hyperdisk-balanced,disk-iops=3000,disk-throughput=140. Requires --google-region.",
-			EnvVar: "GOOGLE_FLEX_MACHINE_TYPE",
+			Name:   "google-flex-selection",
+			Usage:  "(Experimental) Selection for bulkInsert flex policy. Format: k=v[,k=v...]. machine-type is required; disk-type/disk-iops/disk-throughput attach a disk override. Repeat in preference order: first occurrence is rank 0 (most preferred). Example: machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-iops=3000,disk-throughput=140. Requires --google-region.",
+			EnvVar: "GOOGLE_FLEX_SELECTION",
 		},
 		mcnflag.StringSliceFlag{
 			Name:   "google-location-zone",
@@ -408,7 +406,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 
 	d.BulkInsert = flags.Bool("google-bulk-insert")
 	d.Region = flags.String("google-region")
-	d.FlexMachineTypes = flags.StringSlice("google-flex-machine-type")
+	d.FlexSelections = flags.StringSlice("google-flex-selection")
 	d.LocationZones = flags.StringSlice("google-location-zone")
 
 	if d.BulkInsert {
@@ -424,16 +422,12 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		if d.Address != "" {
 			return errors.New("--google-address is not supported with --google-bulk-insert: bulkInsert does not accept custom external IPs")
 		}
-		for _, entry := range d.FlexMachineTypes {
+		for _, entry := range d.FlexSelections {
 			if strings.TrimSpace(entry) == "" {
-				return errors.New("--google-flex-machine-type entries must be non-empty machine-type names")
+				return errors.New("--google-flex-selection entries must be non-empty")
 			}
-			mt, _, err := parseFlexMachineTypeEntry(entry)
-			if err != nil {
-				return fmt.Errorf("--google-flex-machine-type entry %q: %w", entry, err)
-			}
-			if strings.TrimSpace(mt) == "" {
-				return fmt.Errorf("--google-flex-machine-type entry %q has an empty machine-type", entry)
+			if _, err := parseFlexSelectionEntry(entry); err != nil {
+				return fmt.Errorf("--google-flex-selection %q: %w", entry, err)
 			}
 		}
 		for _, entry := range d.LocationZones {
@@ -443,8 +437,8 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 			}
 		}
 	} else {
-		if len(d.FlexMachineTypes) > 0 {
-			return errors.New("--google-flex-machine-type requires --google-bulk-insert")
+		if len(d.FlexSelections) > 0 {
+			return errors.New("--google-flex-selection requires --google-bulk-insert")
 		}
 		if len(d.LocationZones) > 0 {
 			return errors.New("--google-location-zone requires --google-bulk-insert")

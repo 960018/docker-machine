@@ -6,7 +6,7 @@ package google
 // is replaced by a regional RegionInstances.BulkInsert. The single
 // request carries LocationPolicy (zone preference, from
 // --google-location-zone) and InstanceFlexibilityPolicy (ranked
-// machine-type fallback, from --google-flex-machine-type) so GCP
+// machine-type fallback, from --google-flex-selection) so GCP
 // picks zone × machine-type per call.
 //
 // The Operation returned by BulkInsert is region-scoped and tells us
@@ -215,70 +215,69 @@ func parseLocationZoneEntry(entry string) (zone, preference string) {
 	return entry, "ALLOW"
 }
 
-// flexEntryOptions are the recognised key=value overrides on a
-// --google-flex-machine-type entry. Unknown keys are rejected.
-var flexEntryOptions = map[string]bool{
+// flexSelectionKeys are the recognised key=value entries on a
+// --google-flex-selection. Unknown keys are rejected.
+var flexSelectionKeys = map[string]bool{
+	"machine-type":    true,
 	"disk-type":       true,
 	"disk-iops":       true,
 	"disk-throughput": true,
 }
 
-// parseFlexMachineTypeEntry splits "machine-type[:k=v[,k=v...]]".
-// Validates that every option is a recognised key.
-func parseFlexMachineTypeEntry(entry string) (machineType string, opts map[string]string, err error) {
-	parts := strings.SplitN(entry, ":", 2)
-	machineType = parts[0]
-	opts = map[string]string{}
-	if len(parts) < 2 {
-		return
-	}
-	for _, kv := range strings.Split(parts[1], ",") {
+// parseFlexSelectionEntry parses a comma-separated key=value list.
+// machine-type is required.
+func parseFlexSelectionEntry(entry string) (map[string]string, error) {
+	opts := map[string]string{}
+	for _, kv := range strings.Split(entry, ",") {
 		kv = strings.TrimSpace(kv)
 		if kv == "" {
 			continue
 		}
 		eq := strings.IndexByte(kv, '=')
 		if eq < 0 {
-			return "", nil, fmt.Errorf("option %q is not key=value", kv)
+			return nil, fmt.Errorf("element %q is not key=value", kv)
 		}
 		k, v := kv[:eq], kv[eq+1:]
-		if !flexEntryOptions[k] {
-			return "", nil, fmt.Errorf("unknown option %q (supported: disk-type, disk-iops, disk-throughput)", k)
+		if !flexSelectionKeys[k] {
+			return nil, fmt.Errorf("unknown key %q (supported: machine-type, disk-type, disk-iops, disk-throughput)", k)
 		}
 		opts[k] = v
 	}
-	return
+	if opts["machine-type"] == "" {
+		return nil, fmt.Errorf("missing required key machine-type")
+	}
+	return opts, nil
 }
 
-// buildInstanceFlexibilityPolicy returns nil when no flex types are
-// configured. Each --google-flex-machine-type becomes one InstanceSelection
-// with rank = occurrence order. Selection keys are "rank-N" so GCP error
-// messages refer back to the operator's input order. Entries with a
-// "disk-type" option attach a disk override to that selection.
+// buildInstanceFlexibilityPolicy returns nil when no flex selections
+// are configured. Each --google-flex-selection becomes one
+// InstanceSelection with rank = occurrence order. Selection keys are
+// "rank-N" so GCP error messages refer back to the operator's input
+// order. Entries with a "disk-type" key attach a disk override.
 func (c *ComputeUtil) buildInstanceFlexibilityPolicy(d *Driver) (*raw.InstanceFlexibilityPolicy, error) {
-	if len(c.flexMachineTypes) == 0 {
+	if len(c.flexSelections) == 0 {
 		return nil, nil
 	}
 
-	selections := make(map[string]raw.InstanceFlexibilityPolicyInstanceSelection, len(c.flexMachineTypes))
-	for i, entry := range c.flexMachineTypes {
-		mt, opts, err := parseFlexMachineTypeEntry(entry)
+	selections := make(map[string]raw.InstanceFlexibilityPolicyInstanceSelection, len(c.flexSelections))
+	for i, entry := range c.flexSelections {
+		opts, err := parseFlexSelectionEntry(entry)
 		if err != nil {
-			return nil, fmt.Errorf("--google-flex-machine-type entry %q: %w", entry, err)
+			return nil, fmt.Errorf("--google-flex-selection %q: %w", entry, err)
 		}
 		key := fmt.Sprintf("rank-%d", i)
 		sel := raw.InstanceFlexibilityPolicyInstanceSelection{
-			MachineTypes: []string{mt},
+			MachineTypes: []string{opts["machine-type"]},
 			Rank:         int64(i),
 		}
 		if opts["disk-type"] != "" {
 			disk, err := buildSelectionDiskOverride(d, opts)
 			if err != nil {
-				return nil, fmt.Errorf("--google-flex-machine-type entry %q: %w", entry, err)
+				return nil, fmt.Errorf("--google-flex-selection %q: %w", entry, err)
 			}
 			sel.Disks = []*raw.AttachedDisk{disk}
 		} else if opts["disk-iops"] != "" || opts["disk-throughput"] != "" {
-			return nil, fmt.Errorf("--google-flex-machine-type entry %q: disk-iops/disk-throughput require disk-type", entry)
+			return nil, fmt.Errorf("--google-flex-selection %q: disk-iops/disk-throughput require disk-type", entry)
 		}
 		selections[key] = sel
 	}
@@ -416,15 +415,15 @@ func machineTypeFromInstanceURL(rawURL string) (string, error) {
 }
 
 // warnAboutMachineTypeInBulkInsertMode surfaces the interaction between
-// --google-machine-type and --google-flex-machine-type. Flags that
+// --google-machine-type and --google-flex-selection. Flags that
 // bulkInsert outright rejects (--google-address) are blocked at
 // flag-validation time, not warned about here.
 func (c *ComputeUtil) warnAboutMachineTypeInBulkInsertMode(d *Driver) {
-	if len(d.FlexMachineTypes) == 0 {
-		log.Warnf("bulkInsert without --google-flex-machine-type: falling back to --google-machine-type=%q. No machine-type fallback on stockout.", d.MachineType)
+	if len(d.FlexSelections) == 0 {
+		log.Warnf("bulkInsert without --google-flex-selection: falling back to --google-machine-type=%q. No machine-type fallback on stockout.", d.MachineType)
 		return
 	}
 	if d.MachineType != "" && d.MachineType != defaultMachineType {
-		log.Warnf("--google-machine-type=%q is ignored in bulkInsert mode when --google-flex-machine-type is set; only the flex list is honoured.", d.MachineType)
+		log.Warnf("--google-machine-type=%q is ignored in bulkInsert mode when --google-flex-selection is set; only the flex list is honoured.", d.MachineType)
 	}
 }
