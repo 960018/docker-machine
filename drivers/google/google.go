@@ -309,7 +309,7 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 		},
 		mcnflag.StringSliceFlag{
 			Name:   "google-flex-machine-type",
-			Usage:  "(Experimental) GCE machine type for bulkInsert flex policy. Repeat in preference order: first occurrence is rank 0 (most preferred). Bare machine-type names (e.g. n2-standard-2), no URLs. Requires --google-region.",
+			Usage:  "(Experimental) GCE machine type for bulkInsert flex policy. Format: machine-type[:disk-type]. Repeat in preference order: first occurrence is rank 0 (most preferred). Bare machine-type names (e.g. n2-standard-2), no URLs. An optional :disk-type suffix overrides the template disk for that selection (e.g. n4-standard-2:hyperdisk-balanced), letting one bulkInsert flex across machine families that require different disk types. Requires --google-region.",
 			EnvVar: "GOOGLE_FLEX_MACHINE_TYPE",
 		},
 		mcnflag.StringSliceFlag{
@@ -427,6 +427,13 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		for _, entry := range d.FlexMachineTypes {
 			if strings.TrimSpace(entry) == "" {
 				return errors.New("--google-flex-machine-type entries must be non-empty machine-type names")
+			}
+			mt, diskType := parseFlexMachineTypeEntry(entry)
+			if strings.TrimSpace(mt) == "" {
+				return fmt.Errorf("--google-flex-machine-type entry %q has an empty machine-type (expected machine-type[:disk-type])", entry)
+			}
+			if strings.Contains(entry, ":") && strings.TrimSpace(diskType) == "" {
+				return fmt.Errorf("--google-flex-machine-type entry %q has an empty disk-type after ':' (expected machine-type[:disk-type])", entry)
 			}
 		}
 		for _, entry := range d.LocationZones {
