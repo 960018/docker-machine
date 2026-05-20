@@ -27,6 +27,11 @@ import (
 var zonePathSegment = regexp.MustCompile(`/zones/([^/]+)`)
 var machineTypePathSegment = regexp.MustCompile(`/machineTypes/([^/]+)$`)
 
+// bootDeviceName is the deviceName we set on the template boot disk so
+// per-selection disk overrides can merge against it (GCP merges by
+// deviceName).
+const bootDeviceName = "boot"
+
 // createInstanceViaBulkInsert provisions a single VM via
 // RegionInstances.BulkInsert with the configured location and flex
 // policies, waits for the operation to complete, discovers the chosen
@@ -52,7 +57,7 @@ func (c *ComputeUtil) createInstanceViaBulkInsert(d *Driver) error {
 	if policy := c.buildLocationPolicy(); policy != nil {
 		req.LocationPolicy = policy
 	}
-	if flex := c.buildInstanceFlexibilityPolicy(); flex != nil {
+	if flex := c.buildInstanceFlexibilityPolicy(d); flex != nil {
 		req.InstanceFlexibilityPolicy = flex
 	}
 
@@ -97,6 +102,8 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.Instanc
 
 	// MachineType is a bare name (no zonal URL); bulkInsert resolves it
 	// against the placement zone, and flex selections override it.
+	// DeviceName is set so flex selections can override this disk by
+	// matching the same key (the merge contract is per deviceName).
 	props := &raw.InstanceProperties{
 		Description:    "docker host vm",
 		MachineType:    d.MachineType,
@@ -105,6 +112,7 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.Instanc
 			{
 				Boot:       true,
 				AutoDelete: true,
+				DeviceName: bootDeviceName,
 				Type:       "PERSISTENT",
 				Mode:       "READ_WRITE",
 				InitializeParams: &raw.AttachedDiskInitializeParams{
@@ -202,26 +210,66 @@ func parseLocationZoneEntry(entry string) (zone, preference string) {
 	return entry, "ALLOW"
 }
 
+// parseFlexMachineTypeEntry splits "machine-type[:disk-type]".
+// An empty disk-type means "use the template disk".
+func parseFlexMachineTypeEntry(entry string) (machineType, diskType string) {
+	if i := strings.IndexByte(entry, ':'); i >= 0 {
+		return entry[:i], entry[i+1:]
+	}
+	return entry, ""
+}
+
 // buildInstanceFlexibilityPolicy returns nil when no flex types are
 // configured. Each --google-flex-machine-type becomes one InstanceSelection
 // with rank = occurrence order. Selection keys are "rank-N" so GCP error
-// messages refer back to the operator's input order.
-func (c *ComputeUtil) buildInstanceFlexibilityPolicy() *raw.InstanceFlexibilityPolicy {
+// messages refer back to the operator's input order. Entries with a
+// ":disk-type" suffix attach a disk override to that selection.
+func (c *ComputeUtil) buildInstanceFlexibilityPolicy(d *Driver) *raw.InstanceFlexibilityPolicy {
 	if len(c.flexMachineTypes) == 0 {
 		return nil
 	}
 
 	selections := make(map[string]raw.InstanceFlexibilityPolicyInstanceSelection, len(c.flexMachineTypes))
-	for i, mt := range c.flexMachineTypes {
+	for i, entry := range c.flexMachineTypes {
+		mt, diskType := parseFlexMachineTypeEntry(entry)
 		key := fmt.Sprintf("rank-%d", i)
-		selections[key] = raw.InstanceFlexibilityPolicyInstanceSelection{
+		sel := raw.InstanceFlexibilityPolicyInstanceSelection{
 			MachineTypes: []string{mt},
 			Rank:         int64(i),
 		}
+		if diskType != "" {
+			sel.Disks = []*raw.AttachedDisk{buildSelectionDiskOverride(d, diskType)}
+		}
+		selections[key] = sel
 	}
 	return &raw.InstanceFlexibilityPolicy{
 		InstanceSelections: selections,
 	}
+}
+
+// buildSelectionDiskOverride mirrors the template's boot disk with the
+// disk-type swapped. Merged with the template by DeviceName.
+func buildSelectionDiskOverride(d *Driver, diskType string) *raw.AttachedDisk {
+	disk := &raw.AttachedDisk{
+		Boot:       true,
+		AutoDelete: true,
+		DeviceName: bootDeviceName,
+		Type:       "PERSISTENT",
+		Mode:       "READ_WRITE",
+		InitializeParams: &raw.AttachedDiskInitializeParams{
+			SourceImage: "https://www.googleapis.com/compute/v1/projects/" + d.MachineImage,
+			DiskSizeGb:  int64(d.DiskSize),
+			DiskType:    diskType,
+			Labels:      parseLabels(d),
+		},
+	}
+	if d.ProvisionedIops > 0 {
+		disk.InitializeParams.ProvisionedIops = int64(d.ProvisionedIops)
+	}
+	if d.ProvisionedThroughput > 0 {
+		disk.InitializeParams.ProvisionedThroughput = int64(d.ProvisionedThroughput)
+	}
+	return disk
 }
 
 // discoverInstanceZone finds the zone GCP placed our just-created

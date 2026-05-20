@@ -53,14 +53,14 @@ func TestBuildLocationPolicy_Zones(t *testing.T) {
 
 func TestBuildInstanceFlexibilityPolicy_Nil(t *testing.T) {
 	c := &ComputeUtil{}
-	assert.Nil(t, c.buildInstanceFlexibilityPolicy())
+	assert.Nil(t, c.buildInstanceFlexibilityPolicy(&Driver{}))
 }
 
 func TestBuildInstanceFlexibilityPolicy_Ranked(t *testing.T) {
 	c := &ComputeUtil{
 		flexMachineTypes: []string{"n2-standard-2", "n2d-standard-2", "c2-standard-4"},
 	}
-	p := c.buildInstanceFlexibilityPolicy()
+	p := c.buildInstanceFlexibilityPolicy(&Driver{})
 	require.NotNil(t, p)
 	require.Len(t, p.InstanceSelections, 3)
 
@@ -70,10 +70,64 @@ func TestBuildInstanceFlexibilityPolicy_Ranked(t *testing.T) {
 
 	assert.Equal(t, int64(0), r0.Rank)
 	assert.Equal(t, []string{"n2-standard-2"}, r0.MachineTypes)
+	assert.Nil(t, r0.Disks)
 	assert.Equal(t, int64(1), r1.Rank)
 	assert.Equal(t, []string{"n2d-standard-2"}, r1.MachineTypes)
 	assert.Equal(t, int64(2), r2.Rank)
 	assert.Equal(t, []string{"c2-standard-4"}, r2.MachineTypes)
+}
+
+func TestParseFlexMachineTypeEntry(t *testing.T) {
+	cases := map[string]struct {
+		entry        string
+		wantMachine  string
+		wantDiskType string
+	}{
+		"bare":          {"n2-standard-2", "n2-standard-2", ""},
+		"with disk":     {"n4-standard-2:hyperdisk-balanced", "n4-standard-2", "hyperdisk-balanced"},
+		"empty disk":    {"n4-standard-2:", "n4-standard-2", ""},
+		"empty machine": {":hyperdisk-balanced", "", "hyperdisk-balanced"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			mt, dt := parseFlexMachineTypeEntry(tc.entry)
+			assert.Equal(t, tc.wantMachine, mt)
+			assert.Equal(t, tc.wantDiskType, dt)
+		})
+	}
+}
+
+func TestBuildInstanceFlexibilityPolicy_PerSelectionDiskOverride(t *testing.T) {
+	c := &ComputeUtil{
+		flexMachineTypes: []string{
+			"t2d-standard-2",
+			"n2d-standard-2",
+			"n4-standard-2:hyperdisk-balanced",
+		},
+	}
+	d := &Driver{
+		MachineImage: "cos-cloud/global/images/family/cos-stable",
+		DiskSize:     10,
+	}
+	p := c.buildInstanceFlexibilityPolicy(d)
+	require.NotNil(t, p)
+	require.Len(t, p.InstanceSelections, 3)
+
+	r0 := p.InstanceSelections["rank-0"]
+	assert.Equal(t, []string{"t2d-standard-2"}, r0.MachineTypes)
+	assert.Nil(t, r0.Disks, "bare entry must not carry a disk override")
+
+	r1 := p.InstanceSelections["rank-1"]
+	assert.Nil(t, r1.Disks)
+
+	r2 := p.InstanceSelections["rank-2"]
+	assert.Equal(t, []string{"n4-standard-2"}, r2.MachineTypes)
+	require.Len(t, r2.Disks, 1)
+	assert.True(t, r2.Disks[0].Boot)
+	assert.True(t, r2.Disks[0].AutoDelete)
+	assert.Equal(t, bootDeviceName, r2.Disks[0].DeviceName)
+	assert.Equal(t, "hyperdisk-balanced", r2.Disks[0].InitializeParams.DiskType)
+	assert.Equal(t, int64(10), r2.Disks[0].InitializeParams.DiskSizeGb)
 }
 
 func TestZoneFromInstanceURL(t *testing.T) {
