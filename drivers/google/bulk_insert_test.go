@@ -274,9 +274,8 @@ func TestBuildBulkInsertInstanceProperties_BareNamesNoZone(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, props)
 
-	// MachineType: bare name, no /zones/ prefix.
-	assert.Equal(t, "n2-standard-2", props.MachineType)
-	assert.NotContains(t, props.MachineType, "/zones/")
+	// MachineType: unset in flex mode (flex selections provide it).
+	assert.Empty(t, props.MachineType)
 
 	// DiskType: bare name on InitializeParams.
 	require.Len(t, props.Disks, 1)

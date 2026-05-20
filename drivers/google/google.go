@@ -416,6 +416,9 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 		if d.Region == "" {
 			return errors.New("--google-bulk-insert requires --google-region")
 		}
+		if len(d.FlexSelections) == 0 {
+			return errors.New("--google-bulk-insert requires at least one --google-flex-selection")
+		}
 		if d.Zone != "" && d.Zone != defaultZone {
 			return errors.New("--google-bulk-insert and --google-zone are mutually exclusive: bulkInsert picks the zone from --google-location-zone")
 		}

@@ -105,13 +105,10 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.Instanc
 		return nil, err
 	}
 
-	// MachineType is a bare name (no zonal URL); bulkInsert resolves it
-	// against the placement zone, and flex selections override it.
-	// DeviceName is set so flex selections can override this disk by
-	// matching the same key (the merge contract is per deviceName).
+	// DeviceName is set so flex selections can override the boot disk
+	// by matching the same key (GCP merges by deviceName).
 	props := &raw.InstanceProperties{
 		Description:    "docker host vm",
-		MachineType:    d.MachineType,
 		MinCpuPlatform: c.minCPUPlatform,
 		Disks: []*raw.AttachedDisk{
 			{
@@ -415,15 +412,11 @@ func machineTypeFromInstanceURL(rawURL string) (string, error) {
 }
 
 // warnAboutMachineTypeInBulkInsertMode surfaces the interaction between
-// --google-machine-type and --google-flex-selection. Flags that
-// bulkInsert outright rejects (--google-address) are blocked at
-// flag-validation time, not warned about here.
+// warnAboutMachineTypeInBulkInsertMode flags --google-machine-type as
+// shadowed in bulkInsert mode (the machine-type comes from each
+// --google-flex-selection entry).
 func (c *ComputeUtil) warnAboutMachineTypeInBulkInsertMode(d *Driver) {
-	if len(d.FlexSelections) == 0 {
-		log.Warnf("bulkInsert without --google-flex-selection: falling back to --google-machine-type=%q. No machine-type fallback on stockout.", d.MachineType)
-		return
-	}
 	if d.MachineType != "" && d.MachineType != defaultMachineType {
-		log.Warnf("--google-machine-type=%q is ignored in bulkInsert mode when --google-flex-selection is set; only the flex list is honoured.", d.MachineType)
+		log.Warnf("--google-machine-type=%q is ignored in bulkInsert mode; only --google-flex-selection is honoured.", d.MachineType)
 	}
 }
