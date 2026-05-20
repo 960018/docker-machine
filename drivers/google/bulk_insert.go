@@ -362,7 +362,7 @@ func (c *ComputeUtil) finishPostCreate(d *Driver) error {
 	}
 
 	c.syncResolvedMachineType(d, instance)
-	log.Infof("bulkInsert placed %q as %s in %s", c.instanceName, d.ResolvedMachineType, d.ResolvedZone)
+	log.Infof("bulkInsert placed as %s in %s", d.ResolvedMachineType, d.ResolvedZone)
 
 	if err := c.addFirewallTag(instance); err != nil {
 		return fmt.Errorf("adding firewall tag to bulkInsert instance %q: %w", c.instanceName, err)
