@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/docker/machine/libmachine/log"
@@ -26,6 +27,11 @@ import (
 
 var zonePathSegment = regexp.MustCompile(`/zones/([^/]+)`)
 var machineTypePathSegment = regexp.MustCompile(`/machineTypes/([^/]+)$`)
+
+// bootDeviceName is the deviceName we set on the template boot disk so
+// per-selection disk overrides can merge against it (GCP merges by
+// deviceName).
+const bootDeviceName = "boot"
 
 // createInstanceViaBulkInsert provisions a single VM via
 // RegionInstances.BulkInsert with the configured location and flex
@@ -52,7 +58,11 @@ func (c *ComputeUtil) createInstanceViaBulkInsert(d *Driver) error {
 	if policy := c.buildLocationPolicy(); policy != nil {
 		req.LocationPolicy = policy
 	}
-	if flex := c.buildInstanceFlexibilityPolicy(); flex != nil {
+	flex, err := c.buildInstanceFlexibilityPolicy(d)
+	if err != nil {
+		return err
+	}
+	if flex != nil {
 		req.InstanceFlexibilityPolicy = flex
 	}
 
@@ -97,6 +107,8 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.Instanc
 
 	// MachineType is a bare name (no zonal URL); bulkInsert resolves it
 	// against the placement zone, and flex selections override it.
+	// DeviceName is set so flex selections can override this disk by
+	// matching the same key (the merge contract is per deviceName).
 	props := &raw.InstanceProperties{
 		Description:    "docker host vm",
 		MachineType:    d.MachineType,
@@ -105,6 +117,7 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.Instanc
 			{
 				Boot:       true,
 				AutoDelete: true,
+				DeviceName: bootDeviceName,
 				Type:       "PERSISTENT",
 				Mode:       "READ_WRITE",
 				InitializeParams: &raw.AttachedDiskInitializeParams{
@@ -202,26 +215,110 @@ func parseLocationZoneEntry(entry string) (zone, preference string) {
 	return entry, "ALLOW"
 }
 
+// flexEntryOptions are the recognised key=value overrides on a
+// --google-flex-machine-type entry. Unknown keys are rejected.
+var flexEntryOptions = map[string]bool{
+	"disk-type":       true,
+	"disk-iops":       true,
+	"disk-throughput": true,
+}
+
+// parseFlexMachineTypeEntry splits "machine-type[:k=v[,k=v...]]".
+// Validates that every option is a recognised key.
+func parseFlexMachineTypeEntry(entry string) (machineType string, opts map[string]string, err error) {
+	parts := strings.SplitN(entry, ":", 2)
+	machineType = parts[0]
+	opts = map[string]string{}
+	if len(parts) < 2 {
+		return
+	}
+	for _, kv := range strings.Split(parts[1], ",") {
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
+		eq := strings.IndexByte(kv, '=')
+		if eq < 0 {
+			return "", nil, fmt.Errorf("option %q is not key=value", kv)
+		}
+		k, v := kv[:eq], kv[eq+1:]
+		if !flexEntryOptions[k] {
+			return "", nil, fmt.Errorf("unknown option %q (supported: disk-type, disk-iops, disk-throughput)", k)
+		}
+		opts[k] = v
+	}
+	return
+}
+
 // buildInstanceFlexibilityPolicy returns nil when no flex types are
 // configured. Each --google-flex-machine-type becomes one InstanceSelection
 // with rank = occurrence order. Selection keys are "rank-N" so GCP error
-// messages refer back to the operator's input order.
-func (c *ComputeUtil) buildInstanceFlexibilityPolicy() *raw.InstanceFlexibilityPolicy {
+// messages refer back to the operator's input order. Entries with a
+// "disk-type" option attach a disk override to that selection.
+func (c *ComputeUtil) buildInstanceFlexibilityPolicy(d *Driver) (*raw.InstanceFlexibilityPolicy, error) {
 	if len(c.flexMachineTypes) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	selections := make(map[string]raw.InstanceFlexibilityPolicyInstanceSelection, len(c.flexMachineTypes))
-	for i, mt := range c.flexMachineTypes {
+	for i, entry := range c.flexMachineTypes {
+		mt, opts, err := parseFlexMachineTypeEntry(entry)
+		if err != nil {
+			return nil, fmt.Errorf("--google-flex-machine-type entry %q: %w", entry, err)
+		}
 		key := fmt.Sprintf("rank-%d", i)
-		selections[key] = raw.InstanceFlexibilityPolicyInstanceSelection{
+		sel := raw.InstanceFlexibilityPolicyInstanceSelection{
 			MachineTypes: []string{mt},
 			Rank:         int64(i),
 		}
+		if opts["disk-type"] != "" {
+			disk, err := buildSelectionDiskOverride(d, opts)
+			if err != nil {
+				return nil, fmt.Errorf("--google-flex-machine-type entry %q: %w", entry, err)
+			}
+			sel.Disks = []*raw.AttachedDisk{disk}
+		} else if opts["disk-iops"] != "" || opts["disk-throughput"] != "" {
+			return nil, fmt.Errorf("--google-flex-machine-type entry %q: disk-iops/disk-throughput require disk-type", entry)
+		}
+		selections[key] = sel
 	}
 	return &raw.InstanceFlexibilityPolicy{
 		InstanceSelections: selections,
+	}, nil
+}
+
+// buildSelectionDiskOverride mirrors the template's boot disk (image,
+// size, labels) with disk-type, IOPS, and throughput coming from the
+// entry's options. Merged with the template by DeviceName.
+func buildSelectionDiskOverride(d *Driver, opts map[string]string) (*raw.AttachedDisk, error) {
+	disk := &raw.AttachedDisk{
+		Boot:       true,
+		AutoDelete: true,
+		DeviceName: bootDeviceName,
+		Type:       "PERSISTENT",
+		Mode:       "READ_WRITE",
+		InitializeParams: &raw.AttachedDiskInitializeParams{
+			SourceImage: "https://www.googleapis.com/compute/v1/projects/" + d.MachineImage,
+			DiskSizeGb:  int64(d.DiskSize),
+			DiskType:    opts["disk-type"],
+			Labels:      parseLabels(d),
+		},
 	}
+	if s := opts["disk-iops"]; s != "" {
+		v, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || v < 0 {
+			return nil, fmt.Errorf("disk-iops %q is not a non-negative integer", s)
+		}
+		disk.InitializeParams.ProvisionedIops = v
+	}
+	if s := opts["disk-throughput"]; s != "" {
+		v, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || v < 0 {
+			return nil, fmt.Errorf("disk-throughput %q is not a non-negative integer", s)
+		}
+		disk.InitializeParams.ProvisionedThroughput = v
+	}
+	return disk, nil
 }
 
 // discoverInstanceZone finds the zone GCP placed our just-created
