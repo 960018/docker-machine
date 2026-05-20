@@ -53,14 +53,17 @@ func TestBuildLocationPolicy_Zones(t *testing.T) {
 
 func TestBuildInstanceFlexibilityPolicy_Nil(t *testing.T) {
 	c := &ComputeUtil{}
-	assert.Nil(t, c.buildInstanceFlexibilityPolicy(&Driver{}))
+	p, err := c.buildInstanceFlexibilityPolicy(&Driver{})
+	require.NoError(t, err)
+	assert.Nil(t, p)
 }
 
 func TestBuildInstanceFlexibilityPolicy_Ranked(t *testing.T) {
 	c := &ComputeUtil{
 		flexMachineTypes: []string{"n2-standard-2", "n2d-standard-2", "c2-standard-4"},
 	}
-	p := c.buildInstanceFlexibilityPolicy(&Driver{})
+	p, err := c.buildInstanceFlexibilityPolicy(&Driver{})
+	require.NoError(t, err)
 	require.NotNil(t, p)
 	require.Len(t, p.InstanceSelections, 3)
 
@@ -81,18 +84,26 @@ func TestParseFlexMachineTypeEntry(t *testing.T) {
 	cases := map[string]struct {
 		entry        string
 		wantMachine  string
-		wantDiskType string
+		wantOpts     map[string]string
+		wantErrSubst string
 	}{
-		"bare":          {"n2-standard-2", "n2-standard-2", ""},
-		"with disk":     {"n4-standard-2:hyperdisk-balanced", "n4-standard-2", "hyperdisk-balanced"},
-		"empty disk":    {"n4-standard-2:", "n4-standard-2", ""},
-		"empty machine": {":hyperdisk-balanced", "", "hyperdisk-balanced"},
+		"bare":           {"n2-standard-2", "n2-standard-2", map[string]string{}, ""},
+		"disk-type only": {"n4-standard-2:disk-type=hyperdisk-balanced", "n4-standard-2", map[string]string{"disk-type": "hyperdisk-balanced"}, ""},
+		"full override":  {"n4-standard-2:disk-type=hyperdisk-balanced,disk-iops=3000,disk-throughput=140", "n4-standard-2", map[string]string{"disk-type": "hyperdisk-balanced", "disk-iops": "3000", "disk-throughput": "140"}, ""},
+		"unknown key":    {"n4-standard-2:foo=bar", "", nil, "unknown option"},
+		"missing equals": {"n4-standard-2:no-equals", "", nil, "is not key=value"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			mt, dt := parseFlexMachineTypeEntry(tc.entry)
+			mt, opts, err := parseFlexMachineTypeEntry(tc.entry)
+			if tc.wantErrSubst != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErrSubst)
+				return
+			}
+			require.NoError(t, err)
 			assert.Equal(t, tc.wantMachine, mt)
-			assert.Equal(t, tc.wantDiskType, dt)
+			assert.Equal(t, tc.wantOpts, opts)
 		})
 	}
 }
@@ -102,14 +113,15 @@ func TestBuildInstanceFlexibilityPolicy_PerSelectionDiskOverride(t *testing.T) {
 		flexMachineTypes: []string{
 			"t2d-standard-2",
 			"n2d-standard-2",
-			"n4-standard-2:hyperdisk-balanced",
+			"n4-standard-2:disk-type=hyperdisk-balanced,disk-iops=3000,disk-throughput=140",
 		},
 	}
 	d := &Driver{
 		MachineImage: "cos-cloud/global/images/family/cos-stable",
 		DiskSize:     10,
 	}
-	p := c.buildInstanceFlexibilityPolicy(d)
+	p, err := c.buildInstanceFlexibilityPolicy(d)
+	require.NoError(t, err)
 	require.NotNil(t, p)
 	require.Len(t, p.InstanceSelections, 3)
 
@@ -128,6 +140,18 @@ func TestBuildInstanceFlexibilityPolicy_PerSelectionDiskOverride(t *testing.T) {
 	assert.Equal(t, bootDeviceName, r2.Disks[0].DeviceName)
 	assert.Equal(t, "hyperdisk-balanced", r2.Disks[0].InitializeParams.DiskType)
 	assert.Equal(t, int64(10), r2.Disks[0].InitializeParams.DiskSizeGb)
+	assert.Equal(t, int64(3000), r2.Disks[0].InitializeParams.ProvisionedIops)
+	assert.Equal(t, int64(140), r2.Disks[0].InitializeParams.ProvisionedThroughput)
+}
+
+func TestBuildInstanceFlexibilityPolicy_IopsWithoutDiskType(t *testing.T) {
+	c := &ComputeUtil{
+		flexMachineTypes: []string{"n4-standard-2:disk-iops=3000"},
+	}
+	p, err := c.buildInstanceFlexibilityPolicy(&Driver{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "require disk-type")
+	assert.Nil(t, p)
 }
 
 func TestZoneFromInstanceURL(t *testing.T) {

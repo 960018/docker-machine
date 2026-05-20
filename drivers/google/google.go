@@ -309,7 +309,7 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 		},
 		mcnflag.StringSliceFlag{
 			Name:   "google-flex-machine-type",
-			Usage:  "(Experimental) GCE machine type for bulkInsert flex policy. Format: machine-type[:disk-type]. Repeat in preference order: first occurrence is rank 0 (most preferred). Bare machine-type names (e.g. n2-standard-2), no URLs. An optional :disk-type suffix overrides the template disk for that selection (e.g. n4-standard-2:hyperdisk-balanced), letting one bulkInsert flex across machine families that require different disk types. Requires --google-region.",
+			Usage:  "(Experimental) GCE machine type for bulkInsert flex policy. Format: machine-type[:k=v[,k=v...]]. Repeat in preference order: first occurrence is rank 0 (most preferred). Bare names (e.g. n4-standard-2) inherit the template disk. Options after the colon override the disk for that selection: disk-type (e.g. hyperdisk-balanced), disk-iops, disk-throughput. Example: n4-standard-2:disk-type=hyperdisk-balanced,disk-iops=3000,disk-throughput=140. Requires --google-region.",
 			EnvVar: "GOOGLE_FLEX_MACHINE_TYPE",
 		},
 		mcnflag.StringSliceFlag{
@@ -428,12 +428,12 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 			if strings.TrimSpace(entry) == "" {
 				return errors.New("--google-flex-machine-type entries must be non-empty machine-type names")
 			}
-			mt, diskType := parseFlexMachineTypeEntry(entry)
-			if strings.TrimSpace(mt) == "" {
-				return fmt.Errorf("--google-flex-machine-type entry %q has an empty machine-type (expected machine-type[:disk-type])", entry)
+			mt, _, err := parseFlexMachineTypeEntry(entry)
+			if err != nil {
+				return fmt.Errorf("--google-flex-machine-type entry %q: %w", entry, err)
 			}
-			if strings.Contains(entry, ":") && strings.TrimSpace(diskType) == "" {
-				return fmt.Errorf("--google-flex-machine-type entry %q has an empty disk-type after ':' (expected machine-type[:disk-type])", entry)
+			if strings.TrimSpace(mt) == "" {
+				return fmt.Errorf("--google-flex-machine-type entry %q has an empty machine-type", entry)
 			}
 		}
 		for _, entry := range d.LocationZones {
