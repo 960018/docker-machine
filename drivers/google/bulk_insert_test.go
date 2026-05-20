@@ -87,52 +87,53 @@ func TestBuildInstanceFlexibilityPolicy_Ranked(t *testing.T) {
 func TestParseFlexSelectionEntry(t *testing.T) {
 	cases := map[string]struct {
 		entry        string
-		wantOpts     map[string]string
+		want         flexSelection
 		wantErrSubst string
 	}{
 		"machine-type only": {
-			"machine-type=n2-standard-2",
-			map[string]string{"machine-type": "n2-standard-2"}, "",
+			entry: "machine-type=n2-standard-2",
+			want:  flexSelection{MachineType: "n2-standard-2"},
 		},
 		"with disk-type": {
-			"machine-type=n4-standard-2,disk-type=hyperdisk-balanced",
-			map[string]string{"machine-type": "n4-standard-2", "disk-type": "hyperdisk-balanced"}, "",
+			entry: "machine-type=n4-standard-2,disk-type=hyperdisk-balanced",
+			want:  flexSelection{MachineType: "n4-standard-2", DiskType: "hyperdisk-balanced"},
 		},
 		"full override": {
-			"machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-iops=3000,disk-throughput=140",
-			map[string]string{"machine-type": "n4-standard-2", "disk-type": "hyperdisk-balanced", "disk-iops": "3000", "disk-throughput": "140"}, "",
+			entry: "machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-iops=3000,disk-throughput=140",
+			want:  flexSelection{MachineType: "n4-standard-2", DiskType: "hyperdisk-balanced", DiskIops: 3000, DiskThroughput: 140},
 		},
 		"whitespace around equals": {
-			"machine-type = n4-standard-2 , disk-type = hyperdisk-balanced",
-			map[string]string{"machine-type": "n4-standard-2", "disk-type": "hyperdisk-balanced"}, "",
+			entry: "machine-type = n4-standard-2 , disk-type = hyperdisk-balanced",
+			want:  flexSelection{MachineType: "n4-standard-2", DiskType: "hyperdisk-balanced"},
 		},
 		"empty entry between commas": {
-			"machine-type=n4-standard-2,,disk-type=hyperdisk-balanced",
-			map[string]string{"machine-type": "n4-standard-2", "disk-type": "hyperdisk-balanced"}, "",
+			entry: "machine-type=n4-standard-2,,disk-type=hyperdisk-balanced",
+			want:  flexSelection{MachineType: "n4-standard-2", DiskType: "hyperdisk-balanced"},
 		},
-		"missing machine-type": {"disk-type=hyperdisk-balanced", nil, "missing required key machine-type"},
 		"unknown key ignored": {
-			"machine-type=n4-standard-2,foo=bar",
-			map[string]string{"machine-type": "n4-standard-2"}, "",
+			entry: "machine-type=n4-standard-2,foo=bar",
+			want:  flexSelection{MachineType: "n4-standard-2"},
 		},
-		"missing equals":         {"n4-standard-2", nil, "is not key=value"},
-		"empty value":            {"machine-type=n4-standard-2,disk-type=", nil, `empty value for key "disk-type"`},
-		"empty machine-type":     {"machine-type=", nil, `empty value for key "machine-type"`},
-		"duplicate key":          {"machine-type=a,machine-type=b", nil, `duplicate key "machine-type"`},
-		"non-integer iops":       {"machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-iops=abc", nil, "disk-iops"},
-		"negative iops":          {"machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-iops=-1", nil, "disk-iops"},
-		"non-integer throughput": {"machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-throughput=fast", nil, "disk-throughput"},
+		"missing machine-type":   {entry: "disk-type=hyperdisk-balanced", wantErrSubst: "missing required key machine-type"},
+		"missing equals":         {entry: "n4-standard-2", wantErrSubst: "is not key=value"},
+		"empty value":            {entry: "machine-type=n4-standard-2,disk-type=", wantErrSubst: `empty value for key "disk-type"`},
+		"empty machine-type":     {entry: "machine-type=", wantErrSubst: `empty value for key "machine-type"`},
+		"duplicate key":          {entry: "machine-type=a,machine-type=b", wantErrSubst: `duplicate key "machine-type"`},
+		"non-integer iops":       {entry: "machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-iops=abc", wantErrSubst: "disk-iops"},
+		"negative iops":          {entry: "machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-iops=-1", wantErrSubst: "disk-iops"},
+		"non-integer throughput": {entry: "machine-type=n4-standard-2,disk-type=hyperdisk-balanced,disk-throughput=fast", wantErrSubst: "disk-throughput"},
+		"iops without disk-type": {entry: "machine-type=n4-standard-2,disk-iops=3000", wantErrSubst: "require disk-type"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			opts, err := parseFlexSelectionEntry(tc.entry)
+			got, err := parseFlexSelectionEntry(tc.entry)
 			if tc.wantErrSubst != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.wantErrSubst)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tc.wantOpts, opts)
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -173,16 +174,6 @@ func TestBuildInstanceFlexibilityPolicy_PerSelectionDiskOverride(t *testing.T) {
 	assert.Equal(t, int64(3000), r2.Disks[0].InitializeParams.ProvisionedIops)
 	assert.Equal(t, int64(140), r2.Disks[0].InitializeParams.ProvisionedThroughput)
 	assert.Equal(t, map[string]string{"team": "runners", "env": "ci"}, r2.Disks[0].InitializeParams.Labels)
-}
-
-func TestBuildInstanceFlexibilityPolicy_IopsWithoutDiskType(t *testing.T) {
-	c := &ComputeUtil{
-		flexSelections: []string{"machine-type=n4-standard-2,disk-iops=3000"},
-	}
-	p, err := c.buildInstanceFlexibilityPolicy(&Driver{})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "require disk-type")
-	assert.Nil(t, p)
 }
 
 func TestZoneFromInstanceURL(t *testing.T) {

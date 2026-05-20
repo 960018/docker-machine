@@ -212,19 +212,19 @@ func parseLocationZoneEntry(entry string) (zone, preference string) {
 	return entry, "ALLOW"
 }
 
-// flexSelectionKeys are the recognised key=value entries on a
-// --google-flex-selection. Unknown keys are rejected.
-var flexSelectionKeys = map[string]bool{
-	"machine-type":    true,
-	"disk-type":       true,
-	"disk-iops":       true,
-	"disk-throughput": true,
+// flexSelection is one --google-flex-selection entry after parsing.
+type flexSelection struct {
+	MachineType    string
+	DiskType       string
+	DiskIops       int64
+	DiskThroughput int64
 }
 
 // parseFlexSelectionEntry parses a comma-separated key=value list.
-// machine-type is required.
-func parseFlexSelectionEntry(entry string) (map[string]string, error) {
-	opts := map[string]string{}
+// machine-type is required; unknown keys are warned and ignored.
+func parseFlexSelectionEntry(entry string) (flexSelection, error) {
+	var sel flexSelection
+	seen := map[string]bool{}
 	for _, kv := range strings.Split(entry, ",") {
 		kv = strings.TrimSpace(kv)
 		if kv == "" {
@@ -232,34 +232,48 @@ func parseFlexSelectionEntry(entry string) (map[string]string, error) {
 		}
 		parts := strings.SplitN(kv, "=", 2)
 		if len(parts) != 2 {
-			return nil, fmt.Errorf("element %q is not key=value", kv)
+			return sel, fmt.Errorf("element %q is not key=value", kv)
 		}
 		k := strings.TrimSpace(parts[0])
 		v := strings.TrimSpace(parts[1])
-		if !flexSelectionKeys[k] {
-			log.Warnf("--google-flex-selection: ignoring unknown key %q in %q", k, entry)
-			continue
+		if seen[k] {
+			return sel, fmt.Errorf("duplicate key %q", k)
 		}
-		if v == "" {
-			return nil, fmt.Errorf("empty value for key %q", k)
-		}
-		if _, dup := opts[k]; dup {
-			return nil, fmt.Errorf("duplicate key %q", k)
-		}
-		opts[k] = v
-	}
-	if opts["machine-type"] == "" {
-		return nil, fmt.Errorf("missing required key machine-type")
-	}
-	for _, k := range []string{"disk-iops", "disk-throughput"} {
-		if s, ok := opts[k]; ok {
-			n, err := strconv.ParseInt(s, 10, 64)
-			if err != nil || n < 0 {
-				return nil, fmt.Errorf("%s %q is not a non-negative integer", k, s)
+		seen[k] = true
+		switch k {
+		case "machine-type":
+			if v == "" {
+				return sel, fmt.Errorf("empty value for key %q", k)
 			}
+			sel.MachineType = v
+		case "disk-type":
+			if v == "" {
+				return sel, fmt.Errorf("empty value for key %q", k)
+			}
+			sel.DiskType = v
+		case "disk-iops":
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil || n < 0 {
+				return sel, fmt.Errorf("disk-iops %q is not a non-negative integer", v)
+			}
+			sel.DiskIops = n
+		case "disk-throughput":
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil || n < 0 {
+				return sel, fmt.Errorf("disk-throughput %q is not a non-negative integer", v)
+			}
+			sel.DiskThroughput = n
+		default:
+			log.Warnf("--google-flex-selection: ignoring unknown key %q in %q", k, entry)
 		}
 	}
-	return opts, nil
+	if sel.MachineType == "" {
+		return sel, fmt.Errorf("missing required key machine-type")
+	}
+	if sel.DiskType == "" && (seen["disk-iops"] || seen["disk-throughput"]) {
+		return sel, fmt.Errorf("disk-iops/disk-throughput require disk-type")
+	}
+	return sel, nil
 }
 
 // buildInstanceFlexibilityPolicy returns nil when no flex selections
@@ -274,21 +288,19 @@ func (c *ComputeUtil) buildInstanceFlexibilityPolicy(d *Driver) (*raw.InstanceFl
 
 	selections := make(map[string]raw.InstanceFlexibilityPolicyInstanceSelection, len(c.flexSelections))
 	for i, entry := range c.flexSelections {
-		opts, err := parseFlexSelectionEntry(entry)
+		sel, err := parseFlexSelectionEntry(entry)
 		if err != nil {
 			return nil, fmt.Errorf("--google-flex-selection %q: %w", entry, err)
 		}
 		key := fmt.Sprintf("rank-%d", i)
-		sel := raw.InstanceFlexibilityPolicyInstanceSelection{
-			MachineTypes: []string{opts["machine-type"]},
+		instSel := raw.InstanceFlexibilityPolicyInstanceSelection{
+			MachineTypes: []string{sel.MachineType},
 			Rank:         int64(i),
 		}
-		if opts["disk-type"] != "" {
-			sel.Disks = []*raw.AttachedDisk{buildSelectionDiskOverride(d, opts)}
-		} else if opts["disk-iops"] != "" || opts["disk-throughput"] != "" {
-			return nil, fmt.Errorf("--google-flex-selection %q: disk-iops/disk-throughput require disk-type", entry)
+		if sel.DiskType != "" {
+			instSel.Disks = []*raw.AttachedDisk{buildSelectionDiskOverride(d, sel)}
 		}
-		selections[key] = sel
+		selections[key] = instSel
 	}
 	return &raw.InstanceFlexibilityPolicy{
 		InstanceSelections: selections,
@@ -296,10 +308,9 @@ func (c *ComputeUtil) buildInstanceFlexibilityPolicy(d *Driver) (*raw.InstanceFl
 }
 
 // buildSelectionDiskOverride mirrors the template's boot disk (image,
-// size, labels) with disk-type, IOPS, and throughput coming from the
-// entry's options. Merged with the template by DeviceName. opts is
-// assumed to be pre-validated by parseFlexSelectionEntry.
-func buildSelectionDiskOverride(d *Driver, opts map[string]string) *raw.AttachedDisk {
+// size, labels) with disk-type, IOPS, and throughput from the parsed
+// selection. Merged with the template by DeviceName.
+func buildSelectionDiskOverride(d *Driver, sel flexSelection) *raw.AttachedDisk {
 	disk := &raw.AttachedDisk{
 		Boot:       true,
 		AutoDelete: true,
@@ -309,17 +320,15 @@ func buildSelectionDiskOverride(d *Driver, opts map[string]string) *raw.Attached
 		InitializeParams: &raw.AttachedDiskInitializeParams{
 			SourceImage: "https://www.googleapis.com/compute/v1/projects/" + d.MachineImage,
 			DiskSizeGb:  int64(d.DiskSize),
-			DiskType:    opts["disk-type"],
+			DiskType:    sel.DiskType,
 			Labels:      parseLabels(d),
 		},
 	}
-	if s := opts["disk-iops"]; s != "" {
-		v, _ := strconv.ParseInt(s, 10, 64)
-		disk.InitializeParams.ProvisionedIops = v
+	if sel.DiskIops > 0 {
+		disk.InitializeParams.ProvisionedIops = sel.DiskIops
 	}
-	if s := opts["disk-throughput"]; s != "" {
-		v, _ := strconv.ParseInt(s, 10, 64)
-		disk.InitializeParams.ProvisionedThroughput = v
+	if sel.DiskThroughput > 0 {
+		disk.InitializeParams.ProvisionedThroughput = sel.DiskThroughput
 	}
 	return disk
 }
