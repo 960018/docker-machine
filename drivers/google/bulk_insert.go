@@ -230,11 +230,11 @@ func parseFlexSelectionEntry(entry string) (map[string]string, error) {
 		if kv == "" {
 			continue
 		}
-		eq := strings.IndexByte(kv, '=')
-		if eq < 0 {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) != 2 {
 			return nil, fmt.Errorf("element %q is not key=value", kv)
 		}
-		k, v := kv[:eq], kv[eq+1:]
+		k, v := parts[0], parts[1]
 		if !flexSelectionKeys[k] {
 			return nil, fmt.Errorf("unknown key %q (supported: machine-type, disk-type, disk-iops, disk-throughput)", k)
 		}
