@@ -703,9 +703,9 @@ func TestDeleteInstanceWithUnresolvedZoneInDirectMode(t *testing.T) {
 	// No HTTP handler: any call to AggregatedList would be a test
 	// failure since direct mode must not reach the network.
 	c := &ComputeUtil{
-		instanceName:   "runner-abc",
-		project:        "p",
-		bulkInsert: false,
+		instanceName: "runner-abc",
+		project:      "p",
+		bulkInsert:   false,
 	}
 
 	err := c.deleteInstance()
