@@ -66,27 +66,26 @@ func (f experimentalFaults) maybeFaultBulkInsertCall(instanceName, region string
 	}
 }
 
-// maybeFaultBulkInsertOperation returns a synthetic operation error
-// attached to the Operation result, mirroring what GCP attaches when
-// e.g. VM_MIN_COUNT_NOT_REACHED fires. The real driver's
-// waitForRegionOp checks op.Error and surfaces it; this helper lets
-// the test harness force that path.
+// maybeFaultBulkInsertOperation returns a synthetic op-level error
+// when the operator has configured --google-fault-bulk-insert-op-error.
+// The real driver bubbles op.Error out of waitForRegionOp as
+// `operation error: ...`; this helper returns the same shape so the
+// caller can short-circuit the real wait and skip straight to the
+// failure path.
 //
-// Returns the modified Operation, or the original if no fault.
-func (f experimentalFaults) maybeFaultBulkInsertOperation(op *raw.Operation, instanceName string) *raw.Operation {
+// Caveat: an earlier version of this helper mutated the *raw.Operation
+// returned by the bulkInsert call and relied on waitForRegionOp picking
+// up the mutation. That did not work — waitForOp re-fetches via
+// RegionOperations.Wait, so any local mutation is discarded. This
+// version returns an error suitable for the caller to surface directly.
+//
+// Returns nil if no fault is configured.
+func (f experimentalFaults) maybeFaultBulkInsertOperation(instanceName string) error {
 	if f.bulkInsertOpError == "" {
-		return op
+		return nil
 	}
 	log.Warnf("FAULT-INJECT: bulkInsert operation for %q -> synthetic op error %q", instanceName, f.bulkInsertOpError)
-	op.Error = &raw.OperationError{
-		Errors: []*raw.OperationErrorErrors{
-			{
-				Code:    f.bulkInsertOpError,
-				Message: fmt.Sprintf("synthetic fault: %s (sandbox)", f.bulkInsertOpError),
-			},
-		},
-	}
-	return op
+	return fmt.Errorf("operation error: {%s [] synthetic fault: %s (sandbox) [] []}", f.bulkInsertOpError, f.bulkInsertOpError)
 }
 
 // maybeFaultDiscoverZone is invoked at the AggregatedList call site.

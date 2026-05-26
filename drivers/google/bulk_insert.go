@@ -76,12 +76,17 @@ func (c *ComputeUtil) createInstanceViaBulkInsert(d *Driver) error {
 		return fmt.Errorf("bulkInsert rejected create for %q in %q: %w", c.instanceName, c.region(), err)
 	}
 
-	// EXPERIMENTAL: attach a synthetic op-level error before the
-	// waitForRegionOp checks pick it up. Matches the shape of the
-	// VM_MIN_COUNT_NOT_REACHED class.
-	op = c.experimentalFaults.maybeFaultBulkInsertOperation(op, c.instanceName)
-
 	log.Infof("Waiting for bulkInsert operation %s", op.Name)
+
+	// EXPERIMENTAL: short-circuit the wait with a synthetic op-level
+	// error. Mirrors the VM_MIN_COUNT_NOT_REACHED class. Note that GCP
+	// has already accepted the bulkInsert and is placing the VM in the
+	// background; this fault leaves a real orphan in GCP, which is
+	// exactly the production case the self-heal cleanup needs to handle.
+	if syntheticErr := c.experimentalFaults.maybeFaultBulkInsertOperation(c.instanceName); syntheticErr != nil {
+		return fmt.Errorf("bulkInsert for %q did not complete: %w", c.instanceName, syntheticErr)
+	}
+
 	if err := c.waitForRegionOp(op.Name); err != nil {
 		return fmt.Errorf("bulkInsert for %q did not complete: %w", c.instanceName, err)
 	}

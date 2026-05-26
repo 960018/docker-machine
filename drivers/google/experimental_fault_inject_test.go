@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	raw "google.golang.org/api/compute/v1"
 	"google.golang.org/api/googleapi"
 )
 
@@ -49,21 +48,17 @@ func TestMaybeFaultBulkInsertCall(t *testing.T) {
 }
 
 func TestMaybeFaultBulkInsertOperation(t *testing.T) {
-	t.Run("no fault leaves op unchanged", func(t *testing.T) {
+	t.Run("no fault returns nil error", func(t *testing.T) {
 		f := experimentalFaults{}
-		op := &raw.Operation{Name: "op-1"}
-		out := f.maybeFaultBulkInsertOperation(op, "vm")
-		assert.Same(t, op, out)
-		assert.Nil(t, out.Error)
+		assert.NoError(t, f.maybeFaultBulkInsertOperation("vm"))
 	})
-	t.Run("attaches OperationError matching VM_MIN_COUNT_NOT_REACHED shape", func(t *testing.T) {
+	t.Run("returns error matching VM_MIN_COUNT_NOT_REACHED shape", func(t *testing.T) {
 		f := experimentalFaults{bulkInsertOpError: "VM_MIN_COUNT_NOT_REACHED"}
-		op := &raw.Operation{Name: "op-1"}
-		out := f.maybeFaultBulkInsertOperation(op, "vm")
-		require.NotNil(t, out.Error)
-		require.Len(t, out.Error.Errors, 1)
-		assert.Equal(t, "VM_MIN_COUNT_NOT_REACHED", out.Error.Errors[0].Code)
-		assert.Contains(t, out.Error.Errors[0].Message, "synthetic")
+		err := f.maybeFaultBulkInsertOperation("vm")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "VM_MIN_COUNT_NOT_REACHED")
+		assert.Contains(t, err.Error(), "operation error")
+		assert.Contains(t, err.Error(), "synthetic")
 	})
 }
 
