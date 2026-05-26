@@ -640,9 +640,20 @@ func parseLabels(d *Driver) map[string]string {
 // deleteInstance deletes the instance, leaving the persistent disk.
 // Direct and bulkInsert modes both converge on Instances.Delete here;
 // effectiveZone resolves c.zone to the placed zone before we get here.
+//
+// If c.zone is empty we cannot target a Delete call: this happens when
+// a bulkInsert create failed before discoverInstanceZone() ran (e.g.
+// VM_MIN_COUNT_NOT_REACHED), leaving Driver.ResolvedZone unset. We
+// return a synthetic 404 so Driver.Remove()'s isNotFound short-circuit
+// treats the local state as orphaned-but-already-gone, rather than
+// callers retrying forever against an unresolvable target.
 func (c *ComputeUtil) deleteInstance() error {
 	if c.zone == "" {
-		return fmt.Errorf("cannot delete instance %q: zone unresolved (Driver.ResolvedZone / Driver.Zone both empty)", c.instanceName)
+		log.Warnf("Skipping delete of %q: zone unresolved (Driver.ResolvedZone / Driver.Zone both empty); treating as not-found so local state can be reaped. A VM may have been placed; an out-of-band sweep may be required.", c.instanceName)
+		return &googleapi.Error{
+			Code:    http.StatusNotFound,
+			Message: fmt.Sprintf("instance %q has no resolved zone; cannot target delete", c.instanceName),
+		}
 	}
 
 	log.Infof("Deleting instance.")
