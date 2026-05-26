@@ -56,6 +56,13 @@ type ComputeUtil struct {
 	flexSelections []string
 	locationZones  []string
 
+	// bulkInsertMode mirrors Driver.BulkInsert. Used to gate behaviours
+	// that only make sense in bulkInsert mode (e.g. the AggregatedList
+	// self-heal in deleteInstance, which would mask a genuine programming
+	// error in direct mode where Zone is set unconditionally from the
+	// flag).
+	bulkInsertMode bool
+
 	operationBackoffFactory *backoffFactory
 
 	// EXPERIMENTAL: sandbox-only fault injection. Mirrors
@@ -138,6 +145,7 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		flexSelections:          driver.FlexSelections,
 		locationZones:           driver.LocationZones,
 		experimentalFaults:      driver.ExperimentalFaults,
+		bulkInsertMode:          driver.usesBulkInsert(),
 	}, nil
 }
 
@@ -648,15 +656,23 @@ func parseLabels(d *Driver) map[string]string {
 // Direct and bulkInsert modes both converge on Instances.Delete here;
 // effectiveZone resolves c.zone to the placed zone before we get here.
 //
-// If c.zone is empty (bulkInsert create failed before
-// discoverInstanceZone() ran — e.g. VM_MIN_COUNT_NOT_REACHED) we
-// recover by re-running the same AggregatedList lookup the create
-// path uses. If found, the placed VM gets cleaned up correctly. If
-// not found anywhere in the project, we return a 404 so
-// Driver.Remove's isNotFound short-circuit drops the local state
-// rather than retrying forever.
+// In bulkInsert mode, c.zone may be empty if the create failed before
+// discoverInstanceZone() ran (e.g. VM_MIN_COUNT_NOT_REACHED). We recover
+// by re-running the same AggregatedList lookup the create path uses.
+// If the VM is found, it gets cleaned up correctly. If not found
+// anywhere in the project, we return a 404 so Driver.Remove's
+// isNotFound short-circuit drops the local state rather than retrying
+// forever.
+//
+// In direct mode, c.zone == "" would indicate a programming error
+// upstream (Zone is set unconditionally from --google-zone). We surface
+// that as a clear error rather than self-healing, which would mask the
+// underlying bug.
 func (c *ComputeUtil) deleteInstance() error {
 	if c.zone == "" {
+		if !c.bulkInsertMode {
+			return fmt.Errorf("cannot delete instance %q: zone unresolved in direct mode (Driver.Zone should always be set from --google-zone here)", c.instanceName)
+		}
 		log.Warnf("Zone unresolved for %q (likely a failed bulkInsert before discovery); attempting AggregatedList lookup to recover.", c.instanceName)
 		zone, err := c.discoverInstanceZone()
 		if err != nil {
