@@ -56,6 +56,8 @@ type ComputeUtil struct {
 	flexSelections []string
 	locationZones  []string
 
+	bulkInsertMode bool
+
 	operationBackoffFactory *backoffFactory
 }
 
@@ -131,6 +133,7 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		regionExplicit:          driver.Region,
 		flexSelections:          driver.FlexSelections,
 		locationZones:           driver.LocationZones,
+		bulkInsertMode:          driver.usesBulkInsert(),
 	}, nil
 }
 
@@ -638,11 +641,29 @@ func parseLabels(d *Driver) map[string]string {
 }
 
 // deleteInstance deletes the instance, leaving the persistent disk.
-// Direct and bulkInsert modes both converge on Instances.Delete here;
-// effectiveZone resolves c.zone to the placed zone before we get here.
+// In bulkInsert mode, an empty c.zone (failed create before
+// discoverInstanceZone ran) is recovered via AggregatedList; if the VM
+// can't be found we return a 404 so Driver.Remove's isNotFound
+// short-circuit drops the local state instead of retrying forever. In
+// direct mode an empty c.zone indicates a programming error upstream
+// and is surfaced as such.
 func (c *ComputeUtil) deleteInstance() error {
 	if c.zone == "" {
-		return fmt.Errorf("cannot delete instance %q: zone unresolved (Driver.ResolvedZone / Driver.Zone both empty)", c.instanceName)
+		if !c.bulkInsertMode {
+			return fmt.Errorf("cannot delete instance %q: zone unresolved in direct mode (Driver.Zone should always be set from --google-zone here)", c.instanceName)
+		}
+		log.Warnf("Zone unresolved for %q (likely a failed bulkInsert before discovery); attempting AggregatedList lookup to recover.", c.instanceName)
+		zone, err := c.discoverInstanceZone()
+		if err != nil {
+			log.Warnf("AggregatedList lookup for %q did not find a placed instance (%v); treating as not-found so local state can be reaped.", c.instanceName, err)
+			return &googleapi.Error{
+				Code:    http.StatusNotFound,
+				Message: fmt.Sprintf("instance %q has no resolved zone and was not found by AggregatedList; nothing to delete", c.instanceName),
+			}
+		}
+		log.Infof("Recovered zone %q for %q via AggregatedList; proceeding with delete.", zone, c.instanceName)
+		c.zone = zone
+		c.zoneURL = apiURL + c.project + "/zones/" + zone
 	}
 
 	log.Infof("Deleting instance.")
