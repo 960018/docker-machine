@@ -564,3 +564,18 @@ func TestEffectiveZone(t *testing.T) {
 		})
 	}
 }
+
+// TestDeleteInstanceZoneUnresolvedReturns404 covers the bulkInsert
+// failure path where a create failed before discoverInstanceZone() ran
+// (e.g. VM_MIN_COUNT_NOT_REACHED). c.zone is empty, but Driver.Remove
+// has an isNotFound short-circuit, so deleteInstance must return a
+// *googleapi.Error{Code: 404} to break the caller's retry loop.
+func TestDeleteInstanceZoneUnresolvedReturns404(t *testing.T) {
+	c := &ComputeUtil{instanceName: "runner-abc"}
+
+	err := c.deleteInstance()
+
+	if assert.Error(t, err) {
+		assert.True(t, isNotFound(err), "deleteInstance with empty zone must return *googleapi.Error with Code=404 so Driver.Remove's isNotFound short-circuit fires; got %T: %v", err, err)
+	}
+}
