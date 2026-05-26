@@ -1,10 +1,18 @@
 package google
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	raw "google.golang.org/api/compute/v1"
+	"google.golang.org/api/googleapi"
+	"google.golang.org/api/option"
 )
 
 func TestParseLocationZoneEntry(t *testing.T) {
@@ -328,4 +336,113 @@ func TestUsesBulkInsert(t *testing.T) {
 		d := &Driver{BulkInsert: true, Region: "us-east1"}
 		assert.True(t, d.usesBulkInsert())
 	})
+}
+
+// TestTryRecordPlacedZoneFromFailedOp covers the post-bulkInsert-failure
+// salvage path: when GCP reports CreatedVmCount>0 in PerLocationStatus
+// for exactly one zone, the helper should record that zone on
+// Driver.ResolvedZone so a subsequent Remove() can target it directly.
+func TestTryRecordPlacedZoneFromFailedOp(t *testing.T) {
+	tests := map[string]struct {
+		md           *raw.InstancesBulkInsertOperationMetadata
+		wantResolved string
+	}{
+		"single zone reports CreatedVmCount=1": {
+			md: &raw.InstancesBulkInsertOperationMetadata{
+				PerLocationStatus: map[string]raw.BulkInsertOperationStatus{
+					"zones/us-east1-c": {CreatedVmCount: 1, Status: "ROLLING_BACK"},
+				},
+			},
+			wantResolved: "us-east1-c",
+		},
+		"all zones report zero placements": {
+			md: &raw.InstancesBulkInsertOperationMetadata{
+				PerLocationStatus: map[string]raw.BulkInsertOperationStatus{
+					"zones/us-east1-c": {FailedToCreateVmCount: 1},
+					"zones/us-east1-d": {FailedToCreateVmCount: 1},
+				},
+			},
+			wantResolved: "",
+		},
+		"empty PerLocationStatus": {
+			md:           &raw.InstancesBulkInsertOperationMetadata{},
+			wantResolved: "",
+		},
+		"nil metadata": {
+			md:           nil,
+			wantResolved: "",
+		},
+		"ambiguous placement across multiple zones leaves ResolvedZone empty": {
+			md: &raw.InstancesBulkInsertOperationMetadata{
+				PerLocationStatus: map[string]raw.BulkInsertOperationStatus{
+					"zones/us-east1-c": {CreatedVmCount: 1},
+					"zones/us-east1-d": {CreatedVmCount: 1},
+				},
+			},
+			wantResolved: "",
+		},
+	}
+
+	for tn, tt := range tests {
+		t.Run(tn, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.Contains(r.URL.Path, "/operations/") {
+					t.Fatalf("unexpected request to %s", r.URL.Path)
+				}
+				op := raw.Operation{
+					Name:                                 "op-test",
+					Status:                               "DONE",
+					InstancesBulkInsertOperationMetadata: tt.md,
+				}
+				body, err := googleapi.WithoutDataWrapper.JSONReader(op)
+				if err != nil {
+					t.Fatal(err)
+				}
+				fmt.Fprint(w, body)
+			})
+			srv := httptest.NewServer(handler)
+			defer srv.Close()
+
+			svc, err := raw.NewService(context.Background(), option.WithoutAuthentication(), option.WithEndpoint(srv.URL))
+			require.NoError(t, err)
+
+			c := &ComputeUtil{
+				instanceName:   "runner-abc",
+				project:        "p",
+				regionExplicit: "us-east1",
+				service:        svc,
+			}
+			d := &Driver{BulkInsert: true}
+
+			c.tryRecordPlacedZoneFromFailedOp(d, "op-test")
+
+			assert.Equal(t, tt.wantResolved, d.ResolvedZone)
+		})
+	}
+}
+
+// TestTryRecordPlacedZoneFromFailedOpIsBestEffort confirms the helper
+// is non-fatal when the operation refetch itself fails (network /
+// permission error). The Driver state must be left untouched.
+func TestTryRecordPlacedZoneFromFailedOpIsBestEffort(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	svc, err := raw.NewService(context.Background(), option.WithoutAuthentication(), option.WithEndpoint(srv.URL))
+	require.NoError(t, err)
+
+	c := &ComputeUtil{
+		instanceName:   "runner-abc",
+		project:        "p",
+		regionExplicit: "us-east1",
+		service:        svc,
+	}
+	d := &Driver{BulkInsert: true, ResolvedZone: "preserved-by-best-effort"}
+
+	c.tryRecordPlacedZoneFromFailedOp(d, "op-test")
+
+	assert.Equal(t, "preserved-by-best-effort", d.ResolvedZone, "best-effort helper must not overwrite ResolvedZone on refetch failure")
 }

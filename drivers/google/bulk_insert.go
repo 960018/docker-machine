@@ -72,8 +72,14 @@ func (c *ComputeUtil) createInstanceViaBulkInsert(d *Driver) error {
 	}
 
 	log.Infof("Waiting for bulkInsert operation %s", op.Name)
-	if err := c.waitForRegionOp(op.Name); err != nil {
-		return fmt.Errorf("bulkInsert for %q did not complete: %w", c.instanceName, err)
+	if waitErr := c.waitForRegionOp(op.Name); waitErr != nil {
+		// On failure, try to refetch the operation and salvage a placed
+		// zone from InstancesBulkInsertOperationMetadata.PerLocationStatus
+		// before returning. If exactly one zone reports CreatedVmCount>0,
+		// record it on the Driver so the subsequent Remove() can target
+		// the orphan precisely instead of falling back to AggregatedList.
+		c.tryRecordPlacedZoneFromFailedOp(d, op.Name)
+		return fmt.Errorf("bulkInsert for %q did not complete: %w", c.instanceName, waitErr)
 	}
 
 	// BulkInsert's Operation TargetLink doesn't carry placement; look
@@ -434,5 +440,61 @@ func machineTypeFromInstanceURL(rawURL string) (string, error) {
 func (c *ComputeUtil) warnAboutMachineTypeInBulkInsertMode(d *Driver) {
 	if d.MachineType != "" && d.MachineType != defaultMachineType {
 		log.Warnf("--google-machine-type=%q is ignored in bulkInsert mode; only --google-flex-selection is honoured.", d.MachineType)
+	}
+}
+
+// tryRecordPlacedZoneFromFailedOp inspects a failed bulkInsert
+// operation's PerLocationStatus and, if GCP reports that exactly one
+// zone successfully placed a VM (CreatedVmCount > 0), records that
+// zone on the Driver. Best-effort: any failure to refetch, parse, or
+// disambiguate is logged at debug and ignored — the Remove() path
+// still has the AggregatedList fallback in deleteInstance to recover.
+//
+// PerLocationStatus is the only post-hoc handle GCP gives us for
+// finding placement when bulkInsert reports a terminal error like
+// VM_MIN_COUNT_NOT_REACHED. Setting ResolvedZone here lets a
+// subsequent Remove() target Instances.Delete directly without the
+// AggregatedList round-trip.
+//
+// GCP semantics observed in INC-10515: VM_MIN_COUNT_NOT_REACHED with
+// minCount=count=1 generally means zero VMs were placed, in which
+// case PerLocationStatus is either empty or all zones report
+// CreatedVmCount=0 — and we correctly skip recording anything. The
+// "ROLLING_BACK" status flag is also informative but not acted on
+// here; if GCP cleans up the placed VM itself, the subsequent
+// Remove() AggregatedList lookup will find nothing and 404 cleanly.
+func (c *ComputeUtil) tryRecordPlacedZoneFromFailedOp(d *Driver, opName string) {
+	if d == nil {
+		return
+	}
+	opDetails, err := c.service.RegionOperations.Get(c.project, c.region(), opName).Do()
+	if err != nil {
+		log.Debugf("Could not refetch failed bulkInsert op %q to check PerLocationStatus: %v", opName, err)
+		return
+	}
+	md := opDetails.InstancesBulkInsertOperationMetadata
+	if md == nil || len(md.PerLocationStatus) == 0 {
+		return
+	}
+	var placedZones []string
+	for locKey, status := range md.PerLocationStatus {
+		if status.CreatedVmCount > 0 {
+			// locKey is e.g. "zones/us-east1-c".
+			zone := strings.TrimPrefix(locKey, "zones/")
+			if zone != "" && zone != locKey {
+				placedZones = append(placedZones, zone)
+			}
+		}
+	}
+	switch len(placedZones) {
+	case 0:
+		// Nothing was placed; nothing to record.
+	case 1:
+		log.Infof("Failed bulkInsert for %q reports CreatedVmCount=1 in %q; recording on Driver so Remove can target it.", c.instanceName, placedZones[0])
+		d.ResolvedZone = placedZones[0]
+	default:
+		// Ambiguous (shouldn't happen at Count=1, but be safe). Let
+		// deleteInstance fall back to AggregatedList.
+		log.Warnf("Failed bulkInsert for %q reports placement in multiple zones %v; leaving ResolvedZone empty, deleteInstance will AggregatedList.", c.instanceName, placedZones)
 	}
 }
