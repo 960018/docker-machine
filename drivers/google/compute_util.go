@@ -57,6 +57,12 @@ type ComputeUtil struct {
 	locationZones  []string
 
 	operationBackoffFactory *backoffFactory
+
+	// EXPERIMENTAL: sandbox-only fault injection. Mirrors
+	// Driver.ExperimentalFaults so per-call-site code can opt into
+	// faults without taking a *Driver dependency. Zero-valued in
+	// production (no flags = no faults).
+	experimentalFaults experimentalFaults
 }
 
 const (
@@ -131,6 +137,7 @@ func newComputeUtil(driver *Driver) (*ComputeUtil, error) {
 		regionExplicit:          driver.Region,
 		flexSelections:          driver.FlexSelections,
 		locationZones:           driver.LocationZones,
+		experimentalFaults:      driver.ExperimentalFaults,
 	}, nil
 }
 
