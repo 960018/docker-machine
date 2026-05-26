@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	raw "google.golang.org/api/compute/v1"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
@@ -566,102 +567,133 @@ func TestEffectiveZone(t *testing.T) {
 	}
 }
 
-// TestDeleteInstanceWithUnresolvedZone covers the bulkInsert failure
-// path where a create failed before discoverInstanceZone() ran (e.g.
-// VM_MIN_COUNT_NOT_REACHED). c.zone is empty; deleteInstance should:
-//
-//   - Re-run AggregatedList to recover the placed instance's zone and
-//     proceed with delete, OR
-//   - If the instance is not found anywhere, return a 404 so
-//     Driver.Remove's isNotFound short-circuit drops the local state
-//     instead of retrying forever.
-func TestDeleteInstanceWithUnresolvedZone(t *testing.T) {
-	tests := map[string]struct {
-		// handler responds to aggregatedList (and optional delete) calls.
-		handler       http.HandlerFunc
-		wantNotFound  bool // expect *googleapi.Error{Code:404}
-		wantSuccess   bool // expect no error after successful delete
-		wantZoneAfter string
-	}{
-		"aggregated list returns the instance in us-east1-c, delete then succeeds": {
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				if strings.Contains(r.URL.Path, "/aggregated/instances") {
-					resp := raw.InstanceAggregatedList{
-						Items: map[string]raw.InstancesScopedList{
-							"zones/us-east1-c": {
-								Instances: []*raw.Instance{
-									{
-										Name: "runner-abc",
-										Zone: "https://www.googleapis.com/compute/v1/projects/p/zones/us-east1-c",
-									},
-								},
+// newUnresolvedZoneComputeUtil builds a ComputeUtil in bulkInsert mode
+// with c.zone unset, pointed at the supplied test server. Shared by the
+// deleteInstance self-heal tests below.
+func newUnresolvedZoneComputeUtil(t *testing.T, srv *httptest.Server) *ComputeUtil {
+	t.Helper()
+	svc, err := raw.NewService(context.Background(), option.WithoutAuthentication(), option.WithEndpoint(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &ComputeUtil{
+		instanceName: "runner-abc",
+		project:      "p",
+		service:      svc,
+		bulkInsert:   true,
+		operationBackoffFactory: &backoffFactory{
+			InitialInterval:     10 * time.Millisecond,
+			RandomizationFactor: 0,
+			Multiplier:          2,
+			MaxInterval:         100 * time.Millisecond,
+			MaxElapsedTime:      time.Second,
+		},
+	}
+}
+
+// TestDeleteInstance_RecoversZoneViaAggregatedList covers the happy
+// path of the self-heal: a failed bulkInsert left c.zone empty, but
+// the VM was actually placed; AggregatedList finds it and we delete
+// it in the recovered zone.
+func TestDeleteInstance_RecoversZoneViaAggregatedList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/aggregated/instances") {
+			resp := raw.InstanceAggregatedList{
+				Items: map[string]raw.InstancesScopedList{
+					"zones/us-east1-c": {
+						Instances: []*raw.Instance{
+							{
+								Name: "runner-abc",
+								Zone: "https://www.googleapis.com/compute/v1/projects/p/zones/us-east1-c",
 							},
 						},
-					}
-					body, _ := googleapi.WithoutDataWrapper.JSONReader(resp)
-					fmt.Fprint(w, body)
-					return
-				}
-				// Delete + waitForRegionalOp both expect an Operation.
-				op := raw.Operation{Name: "op-1", Status: "DONE"}
-				body, _ := googleapi.WithoutDataWrapper.JSONReader(op)
-				fmt.Fprint(w, body)
-			},
-			wantSuccess:   true,
-			wantZoneAfter: "us-east1-c",
-		},
-		"aggregated list finds nothing, return 404 so isNotFound short-circuits": {
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				if strings.Contains(r.URL.Path, "/aggregated/instances") {
-					resp := raw.InstanceAggregatedList{
-						Items: map[string]raw.InstancesScopedList{},
-					}
-					body, _ := googleapi.WithoutDataWrapper.JSONReader(resp)
-					fmt.Fprint(w, body)
-					return
-				}
-				t.Fatalf("unexpected call to %s; should have short-circuited via 404", r.URL.Path)
-			},
-			wantNotFound: true,
-		},
-	}
-
-	for tn, tt := range tests {
-		t.Run(tn, func(t *testing.T) {
-			srv := httptest.NewServer(tt.handler)
-			defer srv.Close()
-
-			svc, err := raw.NewService(context.Background(), option.WithoutAuthentication(), option.WithEndpoint(srv.URL))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			c := &ComputeUtil{
-				instanceName: "runner-abc",
-				project:      "p",
-				service:      svc,
-				operationBackoffFactory: &backoffFactory{
-					InitialInterval:     10 * time.Millisecond,
-					RandomizationFactor: 0,
-					Multiplier:          2,
-					MaxInterval:         100 * time.Millisecond,
-					MaxElapsedTime:      time.Second,
+					},
 				},
 			}
+			body, _ := googleapi.WithoutDataWrapper.JSONReader(resp)
+			fmt.Fprint(w, body)
+			return
+		}
+		// The Delete call (the only request that targets
+		// /instances/<name>) must be sent to the recovered zone.
+		// The follow-up operation-wait does not match this filter.
+		if strings.Contains(r.URL.Path, "/instances/runner-abc") &&
+			!strings.Contains(r.URL.Path, "/zones/us-east1-c/instances/runner-abc") {
+			t.Errorf("delete should target the recovered zone us-east1-c; got %s", r.URL.Path)
+		}
+		// Delete + waitForRegionalOp both expect an Operation.
+		op := raw.Operation{Name: "op-1", Status: "DONE"}
+		body, _ := googleapi.WithoutDataWrapper.JSONReader(op)
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
 
-			err = c.deleteInstance()
+	c := newUnresolvedZoneComputeUtil(t, srv)
 
-			if tt.wantNotFound {
-				if assert.Error(t, err) {
-					assert.True(t, isNotFound(err), "expected *googleapi.Error{Code:404} so Driver.Remove's isNotFound fires; got %T: %v", err, err)
-				}
-				return
+	require.NoError(t, c.deleteInstance())
+	assert.Equal(t, "us-east1-c", c.zone, "recovered zone should be recorded for subsequent calls (e.g. deleteDisk)")
+	// deleteDisk reads c.zoneURL, not c.zone. The two must stay
+	// consistent or the subsequent disk delete targets the wrong path.
+	assert.Contains(t, c.zoneURL, "/zones/us-east1-c", "c.zoneURL must be updated alongside c.zone")
+}
+
+// TestDeleteInstance_UnresolvedZoneReturns404 covers the two failure
+// modes where the self-heal can't recover the zone: the VM wasn't
+// placed (AggregatedList returns empty) or AggregatedList itself
+// errors out (transient IAM / network). Both must convert to a 404
+// so Driver.Remove's isNotFound short-circuit drops the local state
+// instead of looping forever.
+func TestDeleteInstance_UnresolvedZoneReturns404(t *testing.T) {
+	tests := map[string]http.HandlerFunc{
+		"aggregated list returns empty": func(w http.ResponseWriter, r *http.Request) {
+			if !strings.Contains(r.URL.Path, "/aggregated/instances") {
+				t.Fatalf("unexpected call to %s; should have short-circuited via 404", r.URL.Path)
 			}
-
-			if tt.wantSuccess {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.wantZoneAfter, c.zone, "deleteInstance should record the recovered zone for subsequent calls (e.g. deleteDisk)")
+			resp := raw.InstanceAggregatedList{Items: map[string]raw.InstancesScopedList{}}
+			body, _ := googleapi.WithoutDataWrapper.JSONReader(resp)
+			fmt.Fprint(w, body)
+		},
+		"aggregated list returns HTTP 403": func(w http.ResponseWriter, r *http.Request) {
+			if !strings.Contains(r.URL.Path, "/aggregated/instances") {
+				t.Fatalf("unexpected call to %s; should have short-circuited via 404", r.URL.Path)
 			}
+			http.Error(w, `{"error":{"code":403,"message":"synthetic forbidden"}}`, http.StatusForbidden)
+		},
+	}
+
+	for tn, handler := range tests {
+		t.Run(tn, func(t *testing.T) {
+			srv := httptest.NewServer(handler)
+			defer srv.Close()
+
+			c := newUnresolvedZoneComputeUtil(t, srv)
+
+			err := c.deleteInstance()
+
+			require.Error(t, err)
+			assert.True(t, isNotFound(err), "expected *googleapi.Error{Code:404} so Driver.Remove's isNotFound fires; got %T: %v", err, err)
 		})
 	}
+}
+
+// TestDeleteInstance_DirectModeUnresolvedZoneReturnsError verifies that the
+// AggregatedList self-heal does NOT fire in direct mode. In direct
+// mode, Driver.Zone is set unconditionally from --google-zone, so
+// c.zone == "" indicates a programming error upstream rather than a
+// recoverable bulkInsert/discovery race. Self-healing here would mask
+// the bug; deleteInstance must surface a clear error instead.
+func TestDeleteInstance_DirectModeUnresolvedZoneReturnsError(t *testing.T) {
+	// No HTTP handler: any call to AggregatedList would be a test
+	// failure since direct mode must not reach the network.
+	c := &ComputeUtil{
+		instanceName:   "runner-abc",
+		project:        "p",
+		bulkInsert: false,
+	}
+
+	err := c.deleteInstance()
+
+	require.Error(t, err)
+	assert.False(t, isNotFound(err), "direct mode must not synthesise a 404; the empty zone is a programming error to surface, not mask")
+	assert.Contains(t, err.Error(), "direct mode", "error should hint that the failure is direct-mode-specific")
 }
