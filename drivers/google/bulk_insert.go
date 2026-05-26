@@ -66,10 +66,20 @@ func (c *ComputeUtil) createInstanceViaBulkInsert(d *Driver) error {
 		req.InstanceFlexibilityPolicy = flex
 	}
 
+	// EXPERIMENTAL: pre-call fault for the bulkInsert HTTP request.
+	if err := d.ExperimentalFaults.maybeFaultBulkInsertCall(c.instanceName, c.region()); err != nil {
+		return fmt.Errorf("bulkInsert rejected create for %q in %q: %w", c.instanceName, c.region(), err)
+	}
+
 	op, err := c.service.RegionInstances.BulkInsert(c.project, c.region(), req).Do()
 	if err != nil {
 		return fmt.Errorf("bulkInsert rejected create for %q in %q: %w", c.instanceName, c.region(), err)
 	}
+
+	// EXPERIMENTAL: attach a synthetic op-level error before the
+	// waitForRegionOp checks pick it up. Matches the shape of the
+	// VM_MIN_COUNT_NOT_REACHED class.
+	op = d.ExperimentalFaults.maybeFaultBulkInsertOperation(op, c.instanceName)
 
 	log.Infof("Waiting for bulkInsert operation %s", op.Name)
 	if err := c.waitForRegionOp(op.Name); err != nil {
@@ -78,7 +88,7 @@ func (c *ComputeUtil) createInstanceViaBulkInsert(d *Driver) error {
 
 	// BulkInsert's Operation TargetLink doesn't carry placement; look
 	// the instance up by name to find the zone for subsequent calls.
-	zone, err := c.discoverInstanceZone()
+	zone, err := c.discoverInstanceZone(d)
 	if err != nil {
 		return fmt.Errorf("discovering zone for bulkInsert-placed instance %q: %w", c.instanceName, err)
 	}
@@ -342,7 +352,21 @@ func buildSelectionDiskOverride(d *Driver, sel flexSelection) *raw.AttachedDisk 
 // the zone from the instance's Zone self-link (".../zones/<zone>")
 // rather than relying on the response's scope key to avoid coupling
 // to the map's structure.
-func (c *ComputeUtil) discoverInstanceZone() (string, error) {
+//
+// The Driver parameter is only used for EXPERIMENTAL fault injection;
+// production code paths don't depend on it.
+func (c *ComputeUtil) discoverInstanceZone(d *Driver) (string, error) {
+	// EXPERIMENTAL: short-circuit before the AggregatedList call when
+	// the operator has set --google-fault-discover-zone.
+	if handled, instances, faultErr := d.ExperimentalFaults.maybeFaultDiscoverZone(c.instanceName); handled {
+		if faultErr != nil {
+			return "", fmt.Errorf("aggregatedList lookup for %q: %w", c.instanceName, faultErr)
+		}
+		if len(instances) == 0 {
+			return "", fmt.Errorf("instance %q not found in any zone after bulkInsert (operation completed but aggregatedList did not return it)", c.instanceName)
+		}
+	}
+
 	resp, err := c.service.Instances.AggregatedList(c.project).
 		Filter(fmt.Sprintf("name eq %q", c.instanceName)).
 		Do()

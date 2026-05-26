@@ -97,6 +97,11 @@ type Driver struct {
 	ResolvedMachineType string
 
 	OperationBackoffFactory *backoffFactory
+
+	// EXPERIMENTAL: sandbox-only fault injection. Populated from the
+	// --google-fault-* flags. Default zero values mean no-op. See
+	// experimental_fault_inject.go.
+	ExperimentalFaults experimentalFaults
 }
 
 const (
@@ -315,6 +320,28 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "(Experimental) Zone constraint for bulkInsert. Format: zone[:PREFERENCE] where preference is ALLOW (default), PREFERRED, or DENY. Repeat per zone. Empty = any zone in --google-region.",
 			EnvVar: "GOOGLE_LOCATION_ZONE",
 		},
+
+		// --- EXPERIMENTAL: sandbox-only fault injection. ---
+		// These flags are intentionally not surfaced in production
+		// docs. They exist to reproduce known transient GCP failure
+		// modes in the sandbox without depending on the real backend
+		// having a hiccup. Strip these (and experimental_fault_inject.go)
+		// before shipping.
+		mcnflag.IntFlag{
+			Name:   "google-fault-bulk-insert-status",
+			Usage:  "EXPERIMENTAL (sandbox): synthetic HTTP status to return from RegionInstances.BulkInsert. 0 = no fault. 503 reproduces the backendError class seen in production.",
+			EnvVar: "GOOGLE_FAULT_BULK_INSERT_STATUS",
+		},
+		mcnflag.StringFlag{
+			Name:   "google-fault-bulk-insert-op-error",
+			Usage:  "EXPERIMENTAL (sandbox): synthetic op-level error code attached to the bulkInsert Operation. Empty = no fault. VM_MIN_COUNT_NOT_REACHED reproduces the regional-stockout class.",
+			EnvVar: "GOOGLE_FAULT_BULK_INSERT_OP_ERROR",
+		},
+		mcnflag.StringFlag{
+			Name:   "google-fault-discover-zone",
+			Usage:  "EXPERIMENTAL (sandbox): force the post-bulkInsert AggregatedList zone discovery to fail. Empty = no fault. \"fail\" returns synthetic HTTP 403; \"empty\" returns zero matches (eventual-consistency window).",
+			EnvVar: "GOOGLE_FAULT_DISCOVER_ZONE",
+		},
 	}
 }
 
@@ -408,6 +435,17 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.Region = flags.String("google-region")
 	d.FlexSelections = flags.StringSlice("google-flex-selection")
 	d.LocationZones = flags.StringSlice("google-location-zone")
+
+	// EXPERIMENTAL: sandbox-only fault injection. Strip with the rest
+	// of the experimental* code before shipping.
+	d.ExperimentalFaults = experimentalFaults{
+		bulkInsertStatus:  flags.Int("google-fault-bulk-insert-status"),
+		bulkInsertOpError: flags.String("google-fault-bulk-insert-op-error"),
+		discoverZone:      flags.String("google-fault-discover-zone"),
+	}
+	if d.ExperimentalFaults.active() {
+		log.Warnf("EXPERIMENTAL: fault injection ACTIVE on this docker-machine invocation: %+v", d.ExperimentalFaults)
+	}
 
 	if d.BulkInsert {
 		if d.UseExisting {
