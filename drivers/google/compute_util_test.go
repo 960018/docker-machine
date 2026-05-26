@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	raw "google.golang.org/api/compute/v1"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
@@ -637,9 +638,10 @@ func TestDeleteInstanceWithUnresolvedZone(t *testing.T) {
 			}
 
 			c := &ComputeUtil{
-				instanceName: "runner-abc",
-				project:      "p",
-				service:      svc,
+				instanceName:   "runner-abc",
+				project:        "p",
+				service:        svc,
+				bulkInsertMode: true,
 				operationBackoffFactory: &backoffFactory{
 					InitialInterval:     10 * time.Millisecond,
 					RandomizationFactor: 0,
@@ -664,4 +666,26 @@ func TestDeleteInstanceWithUnresolvedZone(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDeleteInstanceWithUnresolvedZoneInDirectMode verifies that the
+// AggregatedList self-heal does NOT fire in direct mode. In direct
+// mode, Driver.Zone is set unconditionally from --google-zone, so
+// c.zone == "" indicates a programming error upstream rather than a
+// recoverable bulkInsert/discovery race. Self-healing here would mask
+// the bug; deleteInstance must surface a clear error instead.
+func TestDeleteInstanceWithUnresolvedZoneInDirectMode(t *testing.T) {
+	// No HTTP handler: any call to AggregatedList would be a test
+	// failure since direct mode must not reach the network.
+	c := &ComputeUtil{
+		instanceName:   "runner-abc",
+		project:        "p",
+		bulkInsertMode: false,
+	}
+
+	err := c.deleteInstance()
+
+	require.Error(t, err)
+	assert.False(t, isNotFound(err), "direct mode must not synthesise a 404; the empty zone is a programming error to surface, not mask")
+	assert.Contains(t, err.Error(), "direct mode", "error should hint that the failure is direct-mode-specific")
 }
