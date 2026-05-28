@@ -444,10 +444,10 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	// EXPERIMENTAL: sandbox-only fault injection. Strip with the rest
 	// of the experimental* code before shipping.
 	d.ExperimentalFaults = experimentalFaults{
-		bulkInsertStatus:     flags.Int("google-fault-bulk-insert-status"),
-		bulkInsertOpError:    flags.String("google-fault-bulk-insert-op-error"),
-		discoverZone:         flags.String("google-fault-discover-zone"),
-		deleteInstanceStatus: flags.Int("google-fault-delete-instance-status"),
+		BulkInsertStatus:     flags.Int("google-fault-bulk-insert-status"),
+		BulkInsertOpError:    flags.String("google-fault-bulk-insert-op-error"),
+		DiscoverZone:         flags.String("google-fault-discover-zone"),
+		DeleteInstanceStatus: flags.Int("google-fault-delete-instance-status"),
 	}
 	if d.ExperimentalFaults.active() {
 		log.Warnf("EXPERIMENTAL: fault injection ACTIVE on this docker-machine invocation: %+v", d.ExperimentalFaults)

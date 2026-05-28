@@ -39,33 +39,38 @@ import (
 // experimentalFaults is a sandbox-only knob set. Populated from the
 // driver flags during SetConfigFromFlags. Never touched on a production
 // driver invocation (default values are zero / empty everywhere).
+// Fields are exported so the struct survives JSON serialisation into
+// ~/.docker/machine/machines/<name>/config.json. Without that, the
+// fault knobs would be set at `docker-machine create` time but lost on
+// every subsequent `docker-machine rm` (which loads Driver state from
+// the persisted JSON without re-running SetConfigFromFlags).
 type experimentalFaults struct {
-	bulkInsertStatus     int    // 0 = no fault
-	bulkInsertOpError    string // "" = no fault
-	discoverZone         string // "" = no fault; "fail" or "empty"
-	deleteInstanceStatus int    // 0 = no fault
+	BulkInsertStatus     int    `json:",omitempty"` // 0 = no fault
+	BulkInsertOpError    string `json:",omitempty"` // "" = no fault
+	DiscoverZone         string `json:",omitempty"` // "" = no fault; "fail" or "empty"
+	DeleteInstanceStatus int    `json:",omitempty"` // 0 = no fault
 }
 
 // active returns true if any fault knob is set. Used to gate the
 // per-site Warn-once log so we never noise a real production driver.
 func (f experimentalFaults) active() bool {
-	return f.bulkInsertStatus != 0 ||
-		f.bulkInsertOpError != "" ||
-		f.discoverZone != "" ||
-		f.deleteInstanceStatus != 0
+	return f.BulkInsertStatus != 0 ||
+		f.BulkInsertOpError != "" ||
+		f.DiscoverZone != "" ||
+		f.DeleteInstanceStatus != 0
 }
 
 // maybeFaultBulkInsertCall returns a synthetic googleapi.Error when
 // the operator has configured --google-fault-bulk-insert-status.
 // Otherwise returns nil and the real call proceeds.
 func (f experimentalFaults) maybeFaultBulkInsertCall(instanceName, region string) error {
-	if f.bulkInsertStatus == 0 {
+	if f.BulkInsertStatus == 0 {
 		return nil
 	}
-	log.Warnf("FAULT-INJECT: bulkInsert for %q in %q -> synthetic HTTP %d", instanceName, region, f.bulkInsertStatus)
+	log.Warnf("FAULT-INJECT: bulkInsert for %q in %q -> synthetic HTTP %d", instanceName, region, f.BulkInsertStatus)
 	return &googleapi.Error{
-		Code:    f.bulkInsertStatus,
-		Message: fmt.Sprintf("synthetic fault: HTTP %d (sandbox)", f.bulkInsertStatus),
+		Code:    f.BulkInsertStatus,
+		Message: fmt.Sprintf("synthetic fault: HTTP %d (sandbox)", f.BulkInsertStatus),
 		// Empty Body and Header on purpose: real GCP 503s have
 		// trace IDs etc; we don't need those to exercise the path.
 	}
@@ -86,11 +91,11 @@ func (f experimentalFaults) maybeFaultBulkInsertCall(instanceName, region string
 //
 // Returns nil if no fault is configured.
 func (f experimentalFaults) maybeFaultBulkInsertOperation(instanceName string) error {
-	if f.bulkInsertOpError == "" {
+	if f.BulkInsertOpError == "" {
 		return nil
 	}
-	log.Warnf("FAULT-INJECT: bulkInsert operation for %q -> synthetic op error %q", instanceName, f.bulkInsertOpError)
-	return fmt.Errorf("operation error: {%s [] synthetic fault: %s (sandbox) [] []}", f.bulkInsertOpError, f.bulkInsertOpError)
+	log.Warnf("FAULT-INJECT: bulkInsert operation for %q -> synthetic op error %q", instanceName, f.BulkInsertOpError)
+	return fmt.Errorf("operation error: {%s [] synthetic fault: %s (sandbox) [] []}", f.BulkInsertOpError, f.BulkInsertOpError)
 }
 
 // maybeFaultDiscoverZone is invoked at the AggregatedList call site.
@@ -101,7 +106,7 @@ func (f experimentalFaults) maybeFaultBulkInsertOperation(instanceName string) e
 //   - mode "empty": handled=true, instances=nil, err=nil (no match found)
 //   - default:      handled=false, caller proceeds with the real call
 func (f experimentalFaults) maybeFaultDiscoverZone(instanceName string) (bool, []*raw.Instance, error) {
-	switch f.discoverZone {
+	switch f.DiscoverZone {
 	case "":
 		return false, nil, nil
 	case "fail":
@@ -115,7 +120,7 @@ func (f experimentalFaults) maybeFaultDiscoverZone(instanceName string) (bool, [
 		return true, nil, nil
 	default:
 		// Unknown mode: warn once but do not fail the call.
-		log.Warnf("FAULT-INJECT: unknown --google-fault-discover-zone=%q, ignoring", f.discoverZone)
+		log.Warnf("FAULT-INJECT: unknown --google-fault-discover-zone=%q, ignoring", f.DiscoverZone)
 		return false, nil, nil
 	}
 }
@@ -127,12 +132,12 @@ func (f experimentalFaults) maybeFaultDiscoverZone(instanceName string) (bool, [
 // (e.g. 503 backendError), so the runner-manager's finalizeRemoval
 // loop keeps retrying. Returns nil when no fault is configured.
 func (f experimentalFaults) maybeFaultDeleteInstance(instanceName, zone string) error {
-	if f.deleteInstanceStatus == 0 {
+	if f.DeleteInstanceStatus == 0 {
 		return nil
 	}
-	log.Warnf("FAULT-INJECT: Instances.Delete(%q) in %q -> synthetic HTTP %d", instanceName, zone, f.deleteInstanceStatus)
+	log.Warnf("FAULT-INJECT: Instances.Delete(%q) in %q -> synthetic HTTP %d", instanceName, zone, f.DeleteInstanceStatus)
 	return &googleapi.Error{
-		Code:    f.deleteInstanceStatus,
-		Message: fmt.Sprintf("synthetic fault: HTTP %d (sandbox)", f.deleteInstanceStatus),
+		Code:    f.DeleteInstanceStatus,
+		Message: fmt.Sprintf("synthetic fault: HTTP %d (sandbox)", f.DeleteInstanceStatus),
 	}
 }

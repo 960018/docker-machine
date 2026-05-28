@@ -17,10 +17,10 @@ func TestExperimentalFaults_Active(t *testing.T) {
 		assert.False(t, f.active(), "default-constructed experimentalFaults must be a no-op so production builds aren't affected")
 	})
 	t.Run("any single field makes it active", func(t *testing.T) {
-		assert.True(t, experimentalFaults{bulkInsertStatus: 503}.active())
-		assert.True(t, experimentalFaults{bulkInsertOpError: "VM_MIN_COUNT_NOT_REACHED"}.active())
-		assert.True(t, experimentalFaults{discoverZone: "fail"}.active())
-		assert.True(t, experimentalFaults{deleteInstanceStatus: 503}.active())
+		assert.True(t, experimentalFaults{BulkInsertStatus: 503}.active())
+		assert.True(t, experimentalFaults{BulkInsertOpError: "VM_MIN_COUNT_NOT_REACHED"}.active())
+		assert.True(t, experimentalFaults{DiscoverZone: "fail"}.active())
+		assert.True(t, experimentalFaults{DeleteInstanceStatus: 503}.active())
 	})
 }
 
@@ -31,7 +31,7 @@ func TestMaybeFaultBulkInsertCall(t *testing.T) {
 		assert.NoError(t, err)
 	})
 	t.Run("returns googleapi.Error with configured status", func(t *testing.T) {
-		f := experimentalFaults{bulkInsertStatus: 503}
+		f := experimentalFaults{BulkInsertStatus: 503}
 		err := f.maybeFaultBulkInsertCall("vm", "us-east1")
 		require.Error(t, err)
 		var gErr *googleapi.Error
@@ -40,7 +40,7 @@ func TestMaybeFaultBulkInsertCall(t *testing.T) {
 		assert.Contains(t, gErr.Message, "synthetic")
 	})
 	t.Run("403 reproduces IAM regression class", func(t *testing.T) {
-		f := experimentalFaults{bulkInsertStatus: 403}
+		f := experimentalFaults{BulkInsertStatus: 403}
 		err := f.maybeFaultBulkInsertCall("vm", "us-east1")
 		var gErr *googleapi.Error
 		require.ErrorAs(t, err, &gErr)
@@ -54,7 +54,7 @@ func TestMaybeFaultBulkInsertOperation(t *testing.T) {
 		assert.NoError(t, f.maybeFaultBulkInsertOperation("vm"))
 	})
 	t.Run("returns error matching VM_MIN_COUNT_NOT_REACHED shape", func(t *testing.T) {
-		f := experimentalFaults{bulkInsertOpError: "VM_MIN_COUNT_NOT_REACHED"}
+		f := experimentalFaults{BulkInsertOpError: "VM_MIN_COUNT_NOT_REACHED"}
 		err := f.maybeFaultBulkInsertOperation("vm")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "VM_MIN_COUNT_NOT_REACHED")
@@ -72,7 +72,7 @@ func TestMaybeFaultDiscoverZone(t *testing.T) {
 		assert.NoError(t, err)
 	})
 	t.Run("fail mode returns synthetic 403", func(t *testing.T) {
-		f := experimentalFaults{discoverZone: "fail"}
+		f := experimentalFaults{DiscoverZone: "fail"}
 		handled, instances, err := f.maybeFaultDiscoverZone("vm")
 		assert.True(t, handled)
 		assert.Nil(t, instances)
@@ -81,14 +81,14 @@ func TestMaybeFaultDiscoverZone(t *testing.T) {
 		assert.Equal(t, 403, gErr.Code)
 	})
 	t.Run("empty mode returns nil result + nil error (eventual-consistency class)", func(t *testing.T) {
-		f := experimentalFaults{discoverZone: "empty"}
+		f := experimentalFaults{DiscoverZone: "empty"}
 		handled, instances, err := f.maybeFaultDiscoverZone("vm")
 		assert.True(t, handled)
 		assert.Nil(t, instances)
 		assert.NoError(t, err, "empty mode mimics AggregatedList returning zero matches, which is not an HTTP error")
 	})
 	t.Run("unknown mode warns but does not handle", func(t *testing.T) {
-		f := experimentalFaults{discoverZone: "garbage"}
+		f := experimentalFaults{DiscoverZone: "garbage"}
 		handled, instances, err := f.maybeFaultDiscoverZone("vm")
 		assert.False(t, handled, "unknown mode must fall through so a typo doesn't silently break production")
 		assert.Nil(t, instances)
@@ -102,7 +102,7 @@ func TestMaybeFaultDeleteInstance(t *testing.T) {
 		assert.NoError(t, f.maybeFaultDeleteInstance("vm", "us-east1-b"))
 	})
 	t.Run("returns googleapi.Error with configured status", func(t *testing.T) {
-		f := experimentalFaults{deleteInstanceStatus: 503}
+		f := experimentalFaults{DeleteInstanceStatus: 503}
 		err := f.maybeFaultDeleteInstance("vm", "us-east1-b")
 		require.Error(t, err)
 		var gErr *googleapi.Error
