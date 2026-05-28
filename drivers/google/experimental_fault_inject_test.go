@@ -20,6 +20,7 @@ func TestExperimentalFaults_Active(t *testing.T) {
 		assert.True(t, experimentalFaults{bulkInsertStatus: 503}.active())
 		assert.True(t, experimentalFaults{bulkInsertOpError: "VM_MIN_COUNT_NOT_REACHED"}.active())
 		assert.True(t, experimentalFaults{discoverZone: "fail"}.active())
+		assert.True(t, experimentalFaults{deleteInstanceStatus: 503}.active())
 	})
 }
 
@@ -92,5 +93,21 @@ func TestMaybeFaultDiscoverZone(t *testing.T) {
 		assert.False(t, handled, "unknown mode must fall through so a typo doesn't silently break production")
 		assert.Nil(t, instances)
 		assert.NoError(t, err)
+	})
+}
+
+func TestMaybeFaultDeleteInstance(t *testing.T) {
+	t.Run("no fault returns nil error", func(t *testing.T) {
+		f := experimentalFaults{}
+		assert.NoError(t, f.maybeFaultDeleteInstance("vm", "us-east1-b"))
+	})
+	t.Run("returns googleapi.Error with configured status", func(t *testing.T) {
+		f := experimentalFaults{deleteInstanceStatus: 503}
+		err := f.maybeFaultDeleteInstance("vm", "us-east1-b")
+		require.Error(t, err)
+		var gErr *googleapi.Error
+		require.ErrorAs(t, err, &gErr, "must be googleapi.Error so isNotFound() in Driver.Remove correctly leaves it as a non-not-found error and propagates the failure up to docker-machine rm")
+		assert.Equal(t, 503, gErr.Code)
+		assert.Contains(t, gErr.Message, "synthetic")
 	})
 }

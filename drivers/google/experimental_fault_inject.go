@@ -21,6 +21,7 @@
 //   --google-fault-bulk-insert-op-error=VM_MIN_COUNT_NOT_REACHED
 //   --google-fault-discover-zone=fail        (force AggregatedList to error)
 //   --google-fault-discover-zone=empty       (force AggregatedList to return zero matches)
+//   --google-fault-delete-instance-status=503 (force Instances.Delete to return that HTTP code)
 //
 // The do-not-ship flags live in a single struct on the Driver so they
 // are easy to grep for and to strip from the release branch.
@@ -39,15 +40,19 @@ import (
 // driver flags during SetConfigFromFlags. Never touched on a production
 // driver invocation (default values are zero / empty everywhere).
 type experimentalFaults struct {
-	bulkInsertStatus  int    // 0 = no fault
-	bulkInsertOpError string // "" = no fault
-	discoverZone      string // "" = no fault; "fail" or "empty"
+	bulkInsertStatus     int    // 0 = no fault
+	bulkInsertOpError    string // "" = no fault
+	discoverZone         string // "" = no fault; "fail" or "empty"
+	deleteInstanceStatus int    // 0 = no fault
 }
 
 // active returns true if any fault knob is set. Used to gate the
 // per-site Warn-once log so we never noise a real production driver.
 func (f experimentalFaults) active() bool {
-	return f.bulkInsertStatus != 0 || f.bulkInsertOpError != "" || f.discoverZone != ""
+	return f.bulkInsertStatus != 0 ||
+		f.bulkInsertOpError != "" ||
+		f.discoverZone != "" ||
+		f.deleteInstanceStatus != 0
 }
 
 // maybeFaultBulkInsertCall returns a synthetic googleapi.Error when
@@ -112,5 +117,22 @@ func (f experimentalFaults) maybeFaultDiscoverZone(instanceName string) (bool, [
 		// Unknown mode: warn once but do not fail the call.
 		log.Warnf("FAULT-INJECT: unknown --google-fault-discover-zone=%q, ignoring", f.discoverZone)
 		return false, nil, nil
+	}
+}
+
+// maybeFaultDeleteInstance returns a synthetic googleapi.Error of the
+// configured HTTP code in place of the real Instances.Delete call.
+// Used to reproduce the case where bulkInsert + AggregatedList recover
+// the zone correctly but the actual delete API call keeps failing
+// (e.g. 503 backendError), so the runner-manager's finalizeRemoval
+// loop keeps retrying. Returns nil when no fault is configured.
+func (f experimentalFaults) maybeFaultDeleteInstance(instanceName, zone string) error {
+	if f.deleteInstanceStatus == 0 {
+		return nil
+	}
+	log.Warnf("FAULT-INJECT: Instances.Delete(%q) in %q -> synthetic HTTP %d", instanceName, zone, f.deleteInstanceStatus)
+	return &googleapi.Error{
+		Code:    f.deleteInstanceStatus,
+		Message: fmt.Sprintf("synthetic fault: HTTP %d (sandbox)", f.deleteInstanceStatus),
 	}
 }

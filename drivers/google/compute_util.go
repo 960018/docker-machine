@@ -688,6 +688,9 @@ func (c *ComputeUtil) deleteInstance() error {
 	}
 
 	log.Infof("Deleting instance.")
+	if err := c.experimentalFaults.maybeFaultDeleteInstance(c.instanceName, c.zone); err != nil {
+		return err
+	}
 	op, err := c.service.Instances.Delete(c.project, c.zone, c.instanceName).Do()
 	if err != nil {
 		return err

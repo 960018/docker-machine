@@ -342,6 +342,11 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "EXPERIMENTAL (sandbox): force the post-bulkInsert AggregatedList zone discovery to fail. Empty = no fault. \"fail\" returns synthetic HTTP 403; \"empty\" returns zero matches (eventual-consistency window).",
 			EnvVar: "GOOGLE_FAULT_DISCOVER_ZONE",
 		},
+		mcnflag.IntFlag{
+			Name:   "google-fault-delete-instance-status",
+			Usage:  "EXPERIMENTAL (sandbox): synthetic HTTP status to return in place of the real Instances.Delete call. 0 = no fault. 503 reproduces the backendError class on delete, which keeps Driver.Remove failing and exercises the runner-manager's finalizeRemoval retry cap.",
+			EnvVar: "GOOGLE_FAULT_DELETE_INSTANCE_STATUS",
+		},
 	}
 }
 
@@ -439,9 +444,10 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	// EXPERIMENTAL: sandbox-only fault injection. Strip with the rest
 	// of the experimental* code before shipping.
 	d.ExperimentalFaults = experimentalFaults{
-		bulkInsertStatus:  flags.Int("google-fault-bulk-insert-status"),
-		bulkInsertOpError: flags.String("google-fault-bulk-insert-op-error"),
-		discoverZone:      flags.String("google-fault-discover-zone"),
+		bulkInsertStatus:     flags.Int("google-fault-bulk-insert-status"),
+		bulkInsertOpError:    flags.String("google-fault-bulk-insert-op-error"),
+		discoverZone:         flags.String("google-fault-discover-zone"),
+		deleteInstanceStatus: flags.Int("google-fault-delete-instance-status"),
 	}
 	if d.ExperimentalFaults.active() {
 		log.Warnf("EXPERIMENTAL: fault injection ACTIVE on this docker-machine invocation: %+v", d.ExperimentalFaults)
