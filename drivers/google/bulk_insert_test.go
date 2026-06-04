@@ -16,12 +16,14 @@ func TestParseLocationZoneEntry(t *testing.T) {
 		{"us-east1-b", "us-east1-b", "ALLOW"},
 		{"us-east1-b:ALLOW", "us-east1-b", "ALLOW"},
 		{"us-east1-b:allow", "us-east1-b", "ALLOW"},
-		{"us-east1-c:PREFERRED", "us-east1-c", "PREFERRED"},
 		{"us-east1-d:DENY", "us-east1-d", "DENY"},
-		{"us-east1-d:preferred", "us-east1-d", "PREFERRED"},
-		// Pass-through for unknown preferences: GCP rejects them server-side
-		// rather than us silently coercing — surfaces typos as API errors.
-		{"us-east1-d:nonsense", "us-east1-d", "NONSENSE"},
+		// PREFERRED is not a valid bulkInsert preference (MIG-only); it
+		// is coerced to ALLOW with a warning rather than passed through,
+		// because GCE does not reliably reject it server-side.
+		{"us-east1-c:PREFERRED", "us-east1-c", "ALLOW"},
+		{"us-east1-d:preferred", "us-east1-d", "ALLOW"},
+		// Any other unknown preference is likewise coerced to ALLOW.
+		{"us-east1-d:nonsense", "us-east1-d", "ALLOW"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.entry, func(t *testing.T) {
@@ -32,10 +34,15 @@ func TestParseLocationZoneEntry(t *testing.T) {
 	}
 }
 
-func TestBuildLocationPolicy_Nil(t *testing.T) {
-	// No zones → nil policy, GCP picks any zone in the region.
+func TestBuildLocationPolicy_NoZones(t *testing.T) {
+	// No zones → still emit a policy carrying TargetShape=ANY with an
+	// empty Locations map, so GCP considers every zone in the region
+	// rather than falling back to the ANY_SINGLE_ZONE default.
 	c := &ComputeUtil{}
-	assert.Nil(t, c.buildLocationPolicy())
+	p := c.buildLocationPolicy()
+	require.NotNil(t, p)
+	assert.Equal(t, "ANY", p.TargetShape)
+	assert.Empty(t, p.Locations)
 }
 
 func TestBuildLocationPolicy_Zones(t *testing.T) {
@@ -44,10 +51,14 @@ func TestBuildLocationPolicy_Zones(t *testing.T) {
 	}
 	p := c.buildLocationPolicy()
 	require.NotNil(t, p)
-	assert.Empty(t, p.TargetShape)
+	// TargetShape=ANY is load-bearing: the bulkInsert default
+	// (ANY_SINGLE_ZONE) pins placement to one zone and fails on
+	// stockout without trying the other allowed zones.
+	assert.Equal(t, "ANY", p.TargetShape)
 	require.Len(t, p.Locations, 3)
 	assert.Equal(t, "ALLOW", p.Locations["zones/us-east1-b"].Preference)
-	assert.Equal(t, "PREFERRED", p.Locations["zones/us-east1-c"].Preference)
+	// PREFERRED is coerced to ALLOW (not a valid bulkInsert preference).
+	assert.Equal(t, "ALLOW", p.Locations["zones/us-east1-c"].Preference)
 	assert.Equal(t, "DENY", p.Locations["zones/us-east1-d"].Preference)
 }
 
