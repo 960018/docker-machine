@@ -82,8 +82,10 @@ type Driver struct {
 	FlexSelections []string
 
 	// LocationZones constrains zone selection. Each entry is
-	// "zone[:PREFERENCE]" (ALLOW / PREFERRED / DENY); empty means GCP
-	// picks any zone in Region.
+	// "zone[:PREFERENCE]" (ALLOW / DENY); empty means GCP picks any
+	// zone in Region. Note: bulkInsert's locationPolicy.locations[]
+	// preference only accepts ALLOW or DENY — PREFERRED is a MIG
+	// distributionPolicy concept and is not valid here.
 	LocationZones []string
 
 	// ResolvedZone and ResolvedMachineType carry the values GCP actually
@@ -312,7 +314,7 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 		},
 		mcnflag.StringSliceFlag{
 			Name:   "google-location-zone",
-			Usage:  "(Experimental) Zone constraint for bulkInsert. Format: zone[:PREFERENCE] where preference is ALLOW (default), PREFERRED, or DENY. Repeat per zone. Empty = any zone in --google-region.",
+			Usage:  "(Experimental) Zone constraint for bulkInsert. Format: zone[:PREFERENCE] where preference is ALLOW (default) or DENY. Repeat per zone. Empty = any zone in --google-region. Note: GCE bulkInsert only accepts ALLOW or DENY here (PREFERRED is not valid and is coerced to ALLOW with a warning).",
 			EnvVar: "GOOGLE_LOCATION_ZONE",
 		},
 	}
@@ -434,7 +436,15 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 			}
 		}
 		for _, entry := range d.LocationZones {
-			zone, _ := parseLocationZoneEntry(entry)
+			// Split off the zone directly rather than via
+			// parseLocationZoneEntry: the latter warns on invalid
+			// preferences, and calling it here too would emit that
+			// warning twice (once at config validation, once at create).
+			// The create-time call in buildLocationPolicy owns the warning.
+			zone := entry
+			if i := strings.IndexByte(entry, ':'); i >= 0 {
+				zone = entry[:i]
+			}
 			if strings.TrimSpace(zone) == "" {
 				return fmt.Errorf("--google-location-zone entry %q has an empty zone (expected zone[:PREFERENCE])", entry)
 			}

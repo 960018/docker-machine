@@ -55,9 +55,7 @@ func (c *ComputeUtil) createInstanceViaBulkInsert(d *Driver) error {
 		},
 		InstanceProperties: props,
 	}
-	if policy := c.buildLocationPolicy(); policy != nil {
-		req.LocationPolicy = policy
-	}
+	req.LocationPolicy = c.buildLocationPolicy()
 	flex, err := c.buildInstanceFlexibilityPolicy(d)
 	if err != nil {
 		return err
@@ -181,17 +179,26 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver) (*raw.Instanc
 	return props, nil
 }
 
-// buildLocationPolicy returns nil when no zones are configured (GCP
-// picks freely within the region). TargetShape is intentionally not
-// exposed: we always send count=1, where every shape collapses to
-// "pick one zone".
+// buildLocationPolicy always returns a policy with TargetShape=ANY so
+// GCP places the VM in whichever zone has capacity, even at count=1.
+//
+// This is load-bearing: the bulkInsert default is ANY_SINGLE_ZONE,
+// which commits to one zone up front and returns
+// VM_MIN_COUNT_NOT_REACHED on stockout there WITHOUT trying any other
+// zone — silently neutering a multi-zone LocationPolicy. ANY restores
+// the cross-zone fallback the policy is meant to provide (and also
+// maximises unused zonal reservation utilisation). See the 8-12%
+// creation-failure regression on saas-linux-small-amd64 where ~95% of
+// placements pinned to a single zone (us-east1-d).
+//
+// When no zones are configured we still send the policy (with an empty
+// Locations map) purely to carry TargetShape=ANY; GCP then considers
+// every zone in the region. Without this, omitting LocationPolicy lets
+// GCP fall back to the ANY_SINGLE_ZONE default region-wide.
 func (c *ComputeUtil) buildLocationPolicy() *raw.LocationPolicy {
-	if len(c.locationZones) == 0 {
-		return nil
-	}
-
 	policy := &raw.LocationPolicy{
-		Locations: make(map[string]raw.LocationPolicyLocation, len(c.locationZones)),
+		TargetShape: "ANY",
+		Locations:   make(map[string]raw.LocationPolicyLocation, len(c.locationZones)),
 	}
 	for _, entry := range c.locationZones {
 		zone, pref := parseLocationZoneEntry(entry)
@@ -203,13 +210,25 @@ func (c *ComputeUtil) buildLocationPolicy() *raw.LocationPolicy {
 }
 
 // parseLocationZoneEntry splits "zone[:preference]"; defaults to ALLOW.
-// Unknown preferences pass through verbatim — GCP rejects them with a
-// clear error message rather than us silently coercing.
+//
+// bulkInsert's locationPolicy.locations[].preference only accepts ALLOW
+// or DENY (PREFERRED is a MIG distributionPolicy concept that does not
+// exist for bulkInsert). Any other value — including PREFERRED — is
+// coerced to ALLOW with a warning rather than passed through: GCE does
+// not reliably reject an invalid preference, so passing it verbatim
+// yields undefined placement behaviour rather than a clear error.
 func parseLocationZoneEntry(entry string) (zone, preference string) {
+	zone = entry
+	preference = "ALLOW"
 	if i := strings.IndexByte(entry, ':'); i >= 0 {
-		return entry[:i], strings.ToUpper(entry[i+1:])
+		zone = entry[:i]
+		preference = strings.ToUpper(entry[i+1:])
 	}
-	return entry, "ALLOW"
+	if preference != "ALLOW" && preference != "DENY" {
+		log.Warnf("--google-location-zone %q: preference %q is not valid for bulkInsert (only ALLOW or DENY); coercing to ALLOW.", entry, preference)
+		preference = "ALLOW"
+	}
+	return zone, preference
 }
 
 // flexSelection is one --google-flex-selection entry after parsing.
