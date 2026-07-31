@@ -79,6 +79,23 @@ func TestSSHKeyMetadataRejectsMissingUserBeforeReadingKey(t *testing.T) {
 	require.ErrorContains(t, err, "username is empty")
 }
 
+func TestMergeSSHKeyMetadataIsIdempotent(t *testing.T) {
+	managerKey := "cos:ssh-rsa manager-key cos\n"
+	metadata := &raw.Metadata{Items: []*raw.MetadataItems{
+		{Key: "ssh-keys", Value: stringPtr("operator:ssh-rsa operator-key operator\n" + managerKey)},
+		{Key: "sshKeys", Value: stringPtr(managerKey)},
+	}}
+	sshMetadata := []*raw.MetadataItems{
+		{Key: "sshKeys", Value: &managerKey},
+		{Key: "ssh-keys", Value: &managerKey},
+	}
+
+	mergeSSHKeyMetadata(metadata, sshMetadata)
+
+	assertMetadata(t, metadata, "ssh-keys", "operator:ssh-rsa operator-key operator\n"+managerKey)
+	assertMetadata(t, metadata, "sshKeys", managerKey)
+}
+
 func TestUploadSSHKeyPreservesExistingMetadata(t *testing.T) {
 	keyPath := filepath.Join(t.TempDir(), "id_rsa")
 	require.NoError(t, os.WriteFile(keyPath+".pub", []byte("ssh-rsa manager-key\n"), 0600))

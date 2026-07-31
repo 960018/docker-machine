@@ -594,20 +594,30 @@ func mergeSSHKeyMetadata(metadata *raw.Metadata, sshMetadata []*raw.MetadataItem
 		}
 		items := make([]*raw.MetadataItems, 0, len(metadata.Items)+1)
 		values := make([]string, 0, 1)
+		seen := make(map[string]struct{})
 		for _, item := range metadata.Items {
 			if item.Key == sshItem.Key {
 				if item.Value != nil && *item.Value != "" {
-					values = append(values, strings.TrimRight(*item.Value, "\n"))
+					for _, line := range strings.Split(strings.TrimRight(*item.Value, "\n"), "\n") {
+						if line == "" {
+							continue
+						}
+						if _, ok := seen[line]; ok {
+							continue
+						}
+						seen[line] = struct{}{}
+						values = append(values, line)
+					}
 				}
 				continue
 			}
 			items = append(items, item)
 		}
-		value := strings.Join(values, "\n")
-		if value != "" {
-			value += "\n"
+		managerLine := strings.TrimRight(*sshItem.Value, "\n")
+		if _, ok := seen[managerLine]; !ok {
+			values = append(values, managerLine)
 		}
-		value += *sshItem.Value
+		value := strings.Join(values, "\n") + "\n"
 		metadata.Items = append(items, &raw.MetadataItems{Key: sshItem.Key, Value: &value})
 	}
 }
