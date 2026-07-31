@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -915,6 +916,7 @@ func TestCreateInstanceViaBulkInsert_LoopAdvancesOnSyncStockout(t *testing.T) {
 func TestCreateInstanceViaBulkInsert_NoPostCreateMutation(t *testing.T) {
 	var calls []string
 	var callsMu sync.Mutex
+	var request raw.BulkInsertInstanceResource
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callsMu.Lock()
 		calls = append(calls, r.Method+" "+r.URL.Path)
@@ -922,6 +924,7 @@ func TestCreateInstanceViaBulkInsert_NoPostCreateMutation(t *testing.T) {
 		var op raw.Operation
 		switch {
 		case strings.Contains(r.URL.Path, "/instances/bulkInsert"):
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
 			op = raw.Operation{Name: "op-bulk-1", Status: "RUNNING"}
 		case strings.Contains(r.URL.Path, "/operations/op-bulk-1"):
 			op = raw.Operation{
@@ -955,6 +958,9 @@ func TestCreateInstanceViaBulkInsert_NoPostCreateMutation(t *testing.T) {
 	defer callsMu.Unlock()
 	assert.Equal(t, "us-east1-d", d.ResolvedZone)
 	assert.Equal(t, "n4-standard-2", d.ResolvedMachineType)
+	assertMetadataValue(t, request.InstanceProperties.Metadata, "ssh-keys", "cos:ssh-rsa test-key cos\n")
+	assertMetadataValue(t, request.InstanceProperties.Metadata, "sshKeys", "cos:ssh-rsa test-key cos\n")
+	assert.Contains(t, request.InstanceProperties.Tags.Items, firewallTargetTag)
 	assert.Equal(t, []string{
 		"POST /projects/p/regions/us-east1/instances/bulkInsert",
 		"POST /projects/p/regions/us-east1/operations/op-bulk-1/wait",
