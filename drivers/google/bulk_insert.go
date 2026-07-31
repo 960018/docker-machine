@@ -22,13 +22,10 @@ package google
 //     succeeds or every selection has been tried.
 //
 // The Operation returned by BulkInsert is region-scoped and tells us
-// when GCP settled placement, but not where; we discover the chosen
-// zone via Instances.AggregatedList before any per-instance follow-up
-// (firewall tag, SSH key).
+// when GCP settled placement. Its metadata normally identifies the chosen
+// zone; AggregatedList remains the fallback when that metadata is absent.
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -52,7 +49,6 @@ var zonePathSegment = regexp.MustCompile(`/zones/([^/]+)`)
 // bad metadata key falls through to the authoritative AggregatedList
 // lookup instead of producing a wrong zone URL.
 var gceZoneName = regexp.MustCompile(`^[a-z]+-[a-z]*[0-9]+-[a-z]$`)
-var machineTypePathSegment = regexp.MustCompile(`/machineTypes/([^/]+)$`)
 
 // bootDeviceName is the deviceName we set on the template boot disk.
 // Kept as a stable identifier so any tooling that inspects the disk
@@ -151,9 +147,9 @@ func (c *ComputeUtil) createInstanceViaBulkInsert(d *Driver) error {
 	stockoutErrs := make([]error, 0, len(selections))
 	for i, sel := range selections {
 		log.Infof("bulkInsert attempt %d/%d: machine-type=%q disk-type=%q", i+1, len(selections), sel.MachineType, sel.DiskType)
-		retryable, attemptErr := c.attemptBulkInsertForSelection(d, sel)
+		selected, retryable, attemptErr := c.attemptBulkInsertForSelection(d, sel)
 		if attemptErr == nil {
-			return c.finishPostCreate(d)
+			return c.finishBulkInsertCreate(d, selected)
 		}
 		if !retryable {
 			return attemptErr
@@ -199,14 +195,14 @@ func (c *ComputeUtil) effectiveFlexSelections(d *Driver) ([]flexSelection, error
 
 // attemptBulkInsertForSelection issues a single bulkInsert call for
 // one selection. Returns:
-//   - (false, nil) on success;
-//   - (true, err)  on stockout-class failure (caller should advance
+//   - (selection, false, nil) on success;
+//   - (empty selection, true, err)  on stockout-class failure (caller should advance
 //     to the next selection);
-//   - (false, err) on any other failure (caller should fail fast).
-func (c *ComputeUtil) attemptBulkInsertForSelection(d *Driver, sel flexSelection) (retryable bool, err error) {
+//   - (empty selection, false, err) on any other failure (caller should fail fast).
+func (c *ComputeUtil) attemptBulkInsertForSelection(d *Driver, sel flexSelection) (selected flexSelection, retryable bool, err error) {
 	props, err := c.buildBulkInsertInstanceProperties(d, sel)
 	if err != nil {
-		return false, fmt.Errorf("building instance properties for bulkInsert: %w", err)
+		return flexSelection{}, false, fmt.Errorf("building instance properties for bulkInsert: %w", err)
 	}
 
 	req := &raw.BulkInsertInstanceResource{
@@ -219,14 +215,7 @@ func (c *ComputeUtil) attemptBulkInsertForSelection(d *Driver, sel flexSelection
 		LocationPolicy:     c.buildLocationPolicy(),
 	}
 
-	reqDumpBuf := new(bytes.Buffer)
-	reqDumpEnc := json.NewEncoder(reqDumpBuf)
-	reqDumpEnc.SetIndent("", "  ")
-	if err = reqDumpEnc.Encode(req); err != nil {
-		log.Debugf("Failed to encode dump of bulkInsert request: %v", err)
-	} else {
-		log.Debugf("bulkInsert request: %s", reqDumpBuf)
-	}
+	log.Debugf("bulkInsert request: instance=%q count=%d minCount=%d machineType=%q metadataItems=%d", c.instanceName, req.Count, req.MinCount, props.MachineType, len(props.Metadata.Items))
 
 	// Reset any zone carried over from a prior (stockout) attempt so a
 	// later failure can't accidentally reuse an earlier attempt's zone.
@@ -241,15 +230,15 @@ func (c *ComputeUtil) attemptBulkInsertForSelection(d *Driver, sel flexSelection
 		// with reason insufficientCapacity — that IS a stockout and
 		// must advance to the next selection rather than abort.
 		if isStockoutAPIError(err) {
-			return true, wrapped
+			return flexSelection{}, true, wrapped
 		}
-		return false, wrapped
+		return flexSelection{}, false, wrapped
 	}
 	// Defensive: a malformed/partial response could yield a nil op or
 	// one with no name. Either makes the wait meaningless, so fail fast
 	// with context rather than panic or wait on an empty name.
 	if op == nil || op.Name == "" {
-		return false, fmt.Errorf("bulkInsert for %q in %q returned no operation name", c.instanceName, c.region())
+		return flexSelection{}, false, fmt.Errorf("bulkInsert for %q in %q returned no operation name", c.instanceName, c.region())
 	}
 
 	log.Infof("Waiting for bulkInsert operation %s", op.Name)
@@ -267,21 +256,21 @@ func (c *ComputeUtil) attemptBulkInsertForSelection(d *Driver, sel flexSelection
 		}
 		wrapped := fmt.Errorf("bulkInsert for %q did not complete: %w", c.instanceName, waitErr)
 		if isStockoutError(waitErr) {
-			return true, wrapped
+			return flexSelection{}, true, wrapped
 		}
-		return false, wrapped
+		return flexSelection{}, false, wrapped
 	}
 
 	// Record the placed zone from the operation metadata so
-	// finishPostCreate can skip the AggregatedList lookup (which is
+	// finishBulkInsertCreate can skip the AggregatedList lookup (which is
 	// rate-limited under stockout load and a known orphan source). Best
 	// effort: if the operation didn't report an unambiguous zone,
-	// placedZone stays empty and finishPostCreate falls back.
+	// placedZone stays empty and finishBulkInsertCreate falls back.
 	if zone, ok := zoneFromBulkInsertOp(doneOp); ok {
 		c.placedZone = zone
 	}
 
-	return false, nil
+	return sel, false, nil
 }
 
 // buildBulkInsertInstanceProperties mirrors the direct-path
@@ -306,6 +295,11 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver, sel flexSelec
 	if err != nil {
 		return nil, err
 	}
+	sshMetadata, err := sshKeyMetadata(c.userName, d.GetSSHKeyPath())
+	if err != nil {
+		return nil, err
+	}
+	mergeSSHKeyMetadata(metadata, sshMetadata)
 
 	// Resolve effective disk parameters: per-selection override when
 	// the selection carries a disk-type, driver defaults otherwise.
@@ -733,11 +727,11 @@ func (c *ComputeUtil) resolvePlacedZone() (string, error) {
 	return zone, nil
 }
 
-// finishPostCreate runs the post-bulkInsert work: resolve the zone GCP
-// placed the VM in, set the driver / compute-util zone fields, fetch
-// the instance, record the flex-picked machine type, add the firewall
-// tag, push the SSH key.
-func (c *ComputeUtil) finishPostCreate(d *Driver) error {
+// finishBulkInsertCreate records placement returned by the completed operation.
+// Tags and SSH metadata were sent in the initial request, so no post-placement
+// instance mutation is required before SSH readiness. If operation metadata
+// does not identify one zone, retain the existing AggregatedList fallback.
+func (c *ComputeUtil) finishBulkInsertCreate(d *Driver, selected flexSelection) error {
 	zone, err := c.resolvePlacedZone()
 	if err != nil {
 		return err
@@ -745,33 +739,9 @@ func (c *ComputeUtil) finishPostCreate(d *Driver) error {
 	c.zone = zone
 	d.ResolvedZone = zone
 	c.zoneURL = apiURL + c.project + "/zones/" + zone
-
-	instance, err := c.instance()
-	if err != nil {
-		return fmt.Errorf("looking up just-created instance %q: %w", c.instanceName, err)
-	}
-
-	c.syncResolvedMachineType(d, instance)
+	d.ResolvedMachineType = selected.MachineType
 	log.Infof("bulkInsert placed as %s in %s", d.ResolvedMachineType, d.ResolvedZone)
-
-	if err := c.addFirewallTag(instance); err != nil {
-		return fmt.Errorf("adding firewall tag to bulkInsert instance %q: %w", c.instanceName, err)
-	}
-
-	return c.uploadSSHKey(instance, d.GetSSHKeyPath())
-}
-
-// syncResolvedMachineType records the machine type GCP actually placed.
-// Best-effort: a parse failure logs and leaves the field empty.
-func (c *ComputeUtil) syncResolvedMachineType(d *Driver, instance *raw.Instance) {
-	if instance == nil {
-		return
-	}
-	if mt, err := machineTypeFromInstanceURL(instance.MachineType); err == nil {
-		d.ResolvedMachineType = mt
-	} else {
-		log.Warnf("could not parse machine type from instance URL %q: %s", instance.MachineType, err)
-	}
+	return nil
 }
 
 // zoneFromInstanceURL parses the zone from ".../zones/<zone>/instances/<name>"
@@ -785,20 +755,6 @@ func zoneFromInstanceURL(rawURL string) (string, error) {
 	m := zonePathSegment.FindStringSubmatch(u.Path)
 	if m == nil {
 		return "", fmt.Errorf("instance URL %q has no /zones/<zone>/ segment in its path", rawURL)
-	}
-	return m[1], nil
-}
-
-// machineTypeFromInstanceURL parses the machine-type segment from a
-// compute self-link of the form ".../machineTypes/<type>".
-func machineTypeFromInstanceURL(rawURL string) (string, error) {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("machine-type URL %q: %w", rawURL, err)
-	}
-	m := machineTypePathSegment.FindStringSubmatch(u.Path)
-	if m == nil {
-		return "", fmt.Errorf("machine-type URL %q has no /machineTypes/<type> segment", rawURL)
 	}
 	return m[1], nil
 }
