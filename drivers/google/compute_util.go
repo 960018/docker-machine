@@ -59,7 +59,7 @@ type ComputeUtil struct {
 
 	// placedZone is the zone a successful bulkInsert operation reported
 	// placing the VM in, read from the operation's
-	// InstancesBulkInsertOperationMetadata. finishPostCreate prefers it
+	// InstancesBulkInsertOperationMetadata. finishBulkInsertCreate prefers it
 	// over an AggregatedList lookup. Empty when the operation did not
 	// unambiguously report a placement zone (then we fall back to
 	// AggregatedList). Set per attempt; only meaningful immediately
@@ -536,27 +536,17 @@ func (c *ComputeUtil) addFirewallTag(instance *raw.Instance) error {
 func (c *ComputeUtil) uploadSSHKey(instance *raw.Instance, sshKeyPath string) error {
 	log.Infof("Uploading SSH Key")
 
-	sshKey, err := ioutil.ReadFile(sshKeyPath + ".pub")
-	if err != nil {
-		return err
-	}
-
-	metaDataValue := fmt.Sprintf("%s:%s %s\n", c.userName, strings.TrimSpace(string(sshKey)), c.userName)
-
 	metadata := instance.Metadata
 	// "sshKeys" was deprecated in favor of "ssh-keys" metadata key. However, old images may still depend
 	// on the old metadata configuration. And users may still have legitimate reasons to use these older
 	// images. As instance metadata is a simple key-value store, it should have no problems with having
 	// the keys defined twice under two different names. Legacy images will then still be able to use the
 	// legacy key naming, while new ones will get support for the expected new naming.
-	metadata.Items = append(metadata.Items, &raw.MetadataItems{
-		Key:   "sshKeys",
-		Value: &metaDataValue,
-	})
-	metadata.Items = append(metadata.Items, &raw.MetadataItems{
-		Key:   "ssh-keys",
-		Value: &metaDataValue,
-	})
+	sshMetadata, err := sshKeyMetadata(c.userName, sshKeyPath)
+	if err != nil {
+		return err
+	}
+	metadata.Items = append(metadata.Items, sshMetadata...)
 
 	op, err := c.service.Instances.SetMetadata(c.project, c.zone, c.instanceName, metadata).Do()
 	if err != nil {
@@ -564,6 +554,22 @@ func (c *ComputeUtil) uploadSSHKey(instance *raw.Instance, sshKeyPath string) er
 	}
 
 	return c.waitForRegionalOp(op.Name)
+}
+
+// sshKeyMetadata builds both metadata spellings required by old and new guest
+// images. It has no API side effects so bulkInsert can include the same key in
+// its initial instance properties.
+func sshKeyMetadata(userName, sshKeyPath string) ([]*raw.MetadataItems, error) {
+	sshKey, err := ioutil.ReadFile(sshKeyPath + ".pub")
+	if err != nil {
+		return nil, err
+	}
+
+	value := fmt.Sprintf("%s:%s %s\n", userName, strings.TrimSpace(string(sshKey)), userName)
+	return []*raw.MetadataItems{
+		{Key: "sshKeys", Value: &value},
+		{Key: "ssh-keys", Value: &value},
+	}, nil
 }
 
 // prepareMetadata prepares instance metadata entries from provided configuration

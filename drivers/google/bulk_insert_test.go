@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/docker/machine/libmachine/drivers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	raw "google.golang.org/api/compute/v1"
@@ -173,42 +176,6 @@ func TestZoneFromInstanceURL(t *testing.T) {
 	}
 }
 
-func TestMachineTypeFromInstanceURL(t *testing.T) {
-	tests := []struct {
-		name    string
-		url     string
-		want    string
-		wantErr bool
-	}{
-		{
-			name: "full self-link",
-			url:  "https://www.googleapis.com/compute/v1/projects/p/zones/us-east1-b/machineTypes/n2-standard-2",
-			want: "n2-standard-2",
-		},
-		{
-			name: "partial path",
-			url:  "projects/p/zones/europe-west2-c/machineTypes/c2-standard-4",
-			want: "c2-standard-4",
-		},
-		{
-			name:    "no machineTypes segment",
-			url:     "https://www.googleapis.com/compute/v1/projects/p/zones/us-east1-b",
-			wantErr: true,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := machineTypeFromInstanceURL(tc.url)
-			if tc.wantErr {
-				assert.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tc.want, got)
-		})
-	}
-}
-
 func TestBuildBulkInsertInstanceProperties_BareNamesAndSelectionFields(t *testing.T) {
 	// Critical bulkInsert invariant: InstanceProperties must not pin
 	// to a specific zone (MachineType / DiskType / AcceleratorType
@@ -226,6 +193,7 @@ func TestBuildBulkInsertInstanceProperties_BareNamesAndSelectionFields(t *testin
 		Scopes:                defaultScopes,
 		ProvisionedIops:       0,
 		ProvisionedThroughput: 0,
+		BaseDriver:            newBulkInsertTestDriver(t).BaseDriver,
 	}
 	c := &ComputeUtil{
 		project:        "p",
@@ -271,6 +239,55 @@ func TestBuildBulkInsertInstanceProperties_BareNamesAndSelectionFields(t *testin
 	assert.Empty(t, props.NetworkInterfaces[0].Subnetwork)
 }
 
+func TestBuildBulkInsertInstanceProperties_IncludesSSHMetadata(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "id_rsa")
+	require.NoError(t, os.WriteFile(keyPath+".pub", []byte("ssh-rsa test-key\n"), 0600))
+
+	d := &Driver{
+		MachineImage:   "ubuntu-os-cloud/global/images/ubuntu-2204",
+		DiskSize:       20,
+		Network:        "default",
+		ServiceAccount: defaultServiceAccount,
+		Scopes:         defaultScopes,
+		BaseDriver:     &drivers.BaseDriver{SSHKeyPath: keyPath},
+	}
+	c := &ComputeUtil{
+		project:        "p",
+		networkProject: "p",
+		diskTypeURL:    "pd-balanced",
+		globalURL:      apiURL + "p/global",
+		userName:       "cos",
+	}
+
+	props, err := c.buildBulkInsertInstanceProperties(d, flexSelection{MachineType: "n4-standard-2"})
+	require.NoError(t, err)
+	assertMetadataValue(t, props.Metadata, "ssh-keys", "cos:ssh-rsa test-key cos\n")
+	assertMetadataValue(t, props.Metadata, "sshKeys", "cos:ssh-rsa test-key cos\n")
+	assert.Contains(t, props.Tags.Items, firewallTargetTag)
+}
+
+func assertMetadataValue(t *testing.T, metadata *raw.Metadata, key, want string) {
+	t.Helper()
+	for _, item := range metadata.Items {
+		if item.Key == key {
+			require.NotNil(t, item.Value)
+			assert.Equal(t, want, *item.Value)
+			return
+		}
+	}
+	t.Fatalf("metadata key %q not found", key)
+}
+
+func newBulkInsertTestDriver(t *testing.T) *Driver {
+	t.Helper()
+	keyPath := filepath.Join(t.TempDir(), "id_rsa")
+	require.NoError(t, os.WriteFile(keyPath+".pub", []byte("ssh-rsa test-key\n"), 0600))
+	return &Driver{
+		Network:    "default",
+		BaseDriver: &drivers.BaseDriver{SSHKeyPath: keyPath},
+	}
+}
+
 func TestBuildBulkInsertInstanceProperties_SelectionWithoutDiskOverride(t *testing.T) {
 	// A selection without disk-type / disk-iops / disk-throughput
 	// inherits the driver-default boot disk: same shape the direct
@@ -286,6 +303,7 @@ func TestBuildBulkInsertInstanceProperties_SelectionWithoutDiskOverride(t *testi
 		Scopes:                defaultScopes,
 		ProvisionedIops:       2500,
 		ProvisionedThroughput: 100,
+		BaseDriver:            newBulkInsertTestDriver(t).BaseDriver,
 	}
 	c := &ComputeUtil{
 		project:        "p",
@@ -726,7 +744,7 @@ func TestAttemptBulkInsertForSelection_SyncStockoutIsRetryable(t *testing.T) {
 			defer srv.Close()
 
 			c := newBulkInsertComputeUtil(t, srv)
-			retryable, err := c.attemptBulkInsertForSelection(&Driver{Network: "default"}, flexSelection{MachineType: "n2d-standard-2"})
+			_, retryable, err := c.attemptBulkInsertForSelection(newBulkInsertTestDriver(t), flexSelection{MachineType: "n2d-standard-2"})
 
 			assert.Equal(t, tc.wantRetryable, retryable)
 			if tc.wantErr {
@@ -771,7 +789,7 @@ func TestCreateInstanceViaBulkInsert_LoopAdvancesOnSyncStockout(t *testing.T) {
 			"machine-type=n4-standard-2",
 		}
 
-		err := c.createInstanceViaBulkInsert(&Driver{Network: "default"})
+		err := c.createInstanceViaBulkInsert(newBulkInsertTestDriver(t))
 
 		require.Error(t, err)
 		// The loop must have advanced through ALL three selections, not
@@ -799,7 +817,7 @@ func TestCreateInstanceViaBulkInsert_LoopAdvancesOnSyncStockout(t *testing.T) {
 			"machine-type=n2d-standard-2",
 		}
 
-		err := c.createInstanceViaBulkInsert(&Driver{Network: "default"})
+		err := c.createInstanceViaBulkInsert(newBulkInsertTestDriver(t))
 
 		require.Error(t, err)
 		// A non-stockout (fatal) rejection must short-circuit the loop:
@@ -834,12 +852,96 @@ func TestCreateInstanceViaBulkInsert_LoopAdvancesOnSyncStockout(t *testing.T) {
 			"machine-type=n2d-standard-2",
 		}
 
-		err := c.createInstanceViaBulkInsert(&Driver{Network: "default"})
+		err := c.createInstanceViaBulkInsert(newBulkInsertTestDriver(t))
 
 		require.Error(t, err)
 		assert.Equal(t, int32(2), bulkInsertCalls.Load(), "429 details-only stockout should advance through every selection")
 		assert.Contains(t, err.Error(), "all 2 bulkInsert selections failed with stockout-class errors")
 	})
+}
+
+func TestCreateInstanceViaBulkInsert_NoPostCreateMutation(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		var op raw.Operation
+		switch {
+		case strings.Contains(r.URL.Path, "/instances/bulkInsert"):
+			op = raw.Operation{Name: "op-bulk-1", Status: "RUNNING"}
+		case strings.Contains(r.URL.Path, "/operations/op-bulk-1"):
+			op = raw.Operation{
+				Name:   "op-bulk-1",
+				Status: "DONE",
+				InstancesBulkInsertOperationMetadata: &raw.InstancesBulkInsertOperationMetadata{
+					PerLocationStatus: map[string]raw.BulkInsertOperationStatus{
+						"zones/us-east1-d": {CreatedVmCount: 1, TargetVmCount: 1, Status: "DONE"},
+					},
+				},
+			}
+		default:
+			t.Fatalf("unexpected post-bulkInsert request: %s %s", r.Method, r.URL.Path)
+		}
+		body, _ := googleapi.WithoutDataWrapper.JSONReader(op)
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	c := newBulkInsertComputeUtil(t, srv)
+	c.regionExplicit = "us-east1"
+	c.userName = "cos"
+	c.flexSelections = []string{"machine-type=n4-standard-2"}
+	d := newBulkInsertTestDriver(t)
+
+	err := c.createInstanceViaBulkInsert(d)
+
+	require.NoError(t, err)
+	assert.Equal(t, "us-east1-d", d.ResolvedZone)
+	assert.Equal(t, "n4-standard-2", d.ResolvedMachineType)
+	assert.Equal(t, []string{
+		"POST /projects/p/regions/us-east1/instances/bulkInsert",
+		"POST /projects/p/regions/us-east1/operations/op-bulk-1/wait",
+	}, calls)
+}
+
+func TestCreateInstanceViaBulkInsert_FallsBackToAggregatedListForZone(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch {
+		case strings.Contains(r.URL.Path, "/instances/bulkInsert"):
+			body, _ := googleapi.WithoutDataWrapper.JSONReader(raw.Operation{Name: "op-bulk-1", Status: "RUNNING"})
+			fmt.Fprint(w, body)
+		case strings.Contains(r.URL.Path, "/operations/op-bulk-1"):
+			body, _ := googleapi.WithoutDataWrapper.JSONReader(raw.Operation{Name: "op-bulk-1", Status: "DONE"})
+			fmt.Fprint(w, body)
+		case strings.Contains(r.URL.Path, "/aggregated/instances"):
+			body, _ := googleapi.WithoutDataWrapper.JSONReader(raw.InstanceAggregatedList{
+				Items: map[string]raw.InstancesScopedList{
+					"zones/us-east1-c": {Instances: []*raw.Instance{{
+						Name: "runner-abc",
+						Zone: "https://www.googleapis.com/compute/v1/projects/p/zones/us-east1-c",
+					}}},
+				},
+			})
+			fmt.Fprint(w, body)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c := newBulkInsertComputeUtil(t, srv)
+	c.regionExplicit = "us-east1"
+	c.flexSelections = []string{"machine-type=n4-standard-2"}
+	d := newBulkInsertTestDriver(t)
+
+	require.NoError(t, c.createInstanceViaBulkInsert(d))
+	assert.Equal(t, "us-east1-c", d.ResolvedZone)
+	assert.Equal(t, []string{
+		"POST /projects/p/regions/us-east1/instances/bulkInsert",
+		"POST /projects/p/regions/us-east1/operations/op-bulk-1/wait",
+		"GET /projects/p/aggregated/instances",
+	}, calls)
 }
 
 func TestZoneFromBulkInsertOp(t *testing.T) {
@@ -953,7 +1055,7 @@ func TestZoneFromBulkInsertOp(t *testing.T) {
 }
 
 // TestResolvePlacedZone verifies the zone-resolution decision that backs
-// finishPostCreate: when the bulkInsert operation already reported a
+// finishBulkInsertCreate: when the bulkInsert operation already reported a
 // placement zone (c.placedZone), resolvePlacedZone returns it WITHOUT
 // issuing an AggregatedList call (the rate-limited, orphan-prone path).
 // When placedZone is empty it must fall back to AggregatedList. We assert
@@ -1005,7 +1107,7 @@ func TestResolvePlacedZone(t *testing.T) {
 // TestAttemptBulkInsertForSelection_SuccessSetsPlacedZone is the
 // end-to-end regression guard for #155: a successful bulkInsert must
 // populate c.placedZone from the operation's PerLocationStatus, so the
-// subsequent finishPostCreate resolves the zone WITHOUT an
+// subsequent finishBulkInsertCreate resolves the zone WITHOUT an
 // AggregatedList call. A regression (e.g. reverting to waitForRegionOp,
 // or not assigning placedZone) would leave placedZone empty and fail
 // this test.
@@ -1044,7 +1146,7 @@ func TestAttemptBulkInsertForSelection_SuccessSetsPlacedZone(t *testing.T) {
 	// Pre-seed a stale zone to prove the reset path clears it before use.
 	c.placedZone = "stale-zone-from-prior-attempt"
 
-	retryable, err := c.attemptBulkInsertForSelection(&Driver{Network: "default"}, flexSelection{MachineType: "n4-standard-2"})
+	_, retryable, err := c.attemptBulkInsertForSelection(newBulkInsertTestDriver(t), flexSelection{MachineType: "n4-standard-2"})
 
 	require.NoError(t, err)
 	assert.False(t, retryable)
@@ -1088,9 +1190,9 @@ func TestAttemptBulkInsertForSelection_SalvagesZoneOnOpError(t *testing.T) {
 
 	c := newBulkInsertComputeUtil(t, srv)
 	c.regionExplicit = "us-east1"
-	d := &Driver{Network: "default"}
+	d := newBulkInsertTestDriver(t)
 
-	retryable, err := c.attemptBulkInsertForSelection(d, flexSelection{MachineType: "n4-standard-2"})
+	_, retryable, err := c.attemptBulkInsertForSelection(d, flexSelection{MachineType: "n4-standard-2"})
 
 	require.Error(t, err)
 	assert.False(t, retryable, "INTERNAL_ERROR is not stockout-class")
