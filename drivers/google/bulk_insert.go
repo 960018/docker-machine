@@ -26,8 +26,6 @@ package google
 // zone; AggregatedList remains the fallback when that metadata is absent.
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -217,14 +215,7 @@ func (c *ComputeUtil) attemptBulkInsertForSelection(d *Driver, sel flexSelection
 		LocationPolicy:     c.buildLocationPolicy(),
 	}
 
-	reqDumpBuf := new(bytes.Buffer)
-	reqDumpEnc := json.NewEncoder(reqDumpBuf)
-	reqDumpEnc.SetIndent("", "  ")
-	if err = reqDumpEnc.Encode(req); err != nil {
-		log.Debugf("Failed to encode dump of bulkInsert request: %v", err)
-	} else {
-		log.Debugf("bulkInsert request: %s", reqDumpBuf)
-	}
+	log.Debugf("bulkInsert request: instance=%q count=%d minCount=%d machineType=%q metadataItems=%d", c.instanceName, req.Count, req.MinCount, props.MachineType, len(props.Metadata.Items))
 
 	// Reset any zone carried over from a prior (stockout) attempt so a
 	// later failure can't accidentally reuse an earlier attempt's zone.

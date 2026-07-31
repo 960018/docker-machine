@@ -91,9 +91,9 @@ type Driver struct {
 	// distributionPolicy concept and is not valid here.
 	LocationZones []string
 
-	// ResolvedZone and ResolvedMachineType carry the values GCP actually
-	// picked, populated by syncDriverStateFromInstance after a successful
-	// create. Empty in direct mode (Zone / MachineType are reality there).
+	// ResolvedZone and ResolvedMachineType record bulkInsert placement from the
+	// completed operation and successful flex selection. Empty in direct mode
+	// (Zone / MachineType are reality there).
 	// ComputeUtil construction prefers ResolvedZone over Zone so per-
 	// instance operations target the right zone after reload from disk;
 	// gitlab-runner!6740 reads ResolvedMachineType for the target_*

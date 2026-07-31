@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -77,6 +78,54 @@ func TestSSHKeyMetadataRejectsMissingUserBeforeReadingKey(t *testing.T) {
 	_, err := sshKeyMetadata("", "/does/not/exist")
 	require.ErrorContains(t, err, "username is empty")
 }
+
+func TestUploadSSHKeyPreservesExistingMetadata(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "id_rsa")
+	require.NoError(t, os.WriteFile(keyPath+".pub", []byte("ssh-rsa manager-key\n"), 0600))
+	var received raw.Metadata
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/setMetadata") {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		}
+		body, _ := googleapi.WithoutDataWrapper.JSONReader(raw.Operation{Name: "op-metadata", Status: "DONE"})
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	svc, err := raw.NewService(context.Background(), option.WithoutAuthentication(), option.WithEndpoint(srv.URL))
+	require.NoError(t, err)
+	fingerprint := "fingerprint"
+	c := &ComputeUtil{
+		service:      svc,
+		project:      "p",
+		zone:         "us-east1-c",
+		instanceName: "runner-abc",
+		userName:     "cos",
+		operationBackoffFactory: &backoffFactory{
+			InitialInterval:     time.Millisecond,
+			RandomizationFactor: 0,
+			Multiplier:          2,
+			MaxInterval:         10 * time.Millisecond,
+			MaxElapsedTime:      time.Second,
+		},
+	}
+	instance := &raw.Instance{Metadata: &raw.Metadata{
+		Fingerprint: fingerprint,
+		Items: []*raw.MetadataItems{
+			{Key: "ssh-keys", Value: stringPtr("operator:ssh-rsa operator-key operator\n")},
+			{Key: "sshKeys", Value: stringPtr("legacy:ssh-rsa legacy-key legacy\n")},
+			{Key: "custom", Value: stringPtr("keep")},
+		},
+	}}
+
+	require.NoError(t, c.uploadSSHKey(instance, keyPath))
+	assert.Equal(t, fingerprint, received.Fingerprint)
+	assertMetadata(t, &received, "ssh-keys", "operator:ssh-rsa operator-key operator\ncos:ssh-rsa manager-key cos\n")
+	assertMetadata(t, &received, "sshKeys", "legacy:ssh-rsa legacy-key legacy\ncos:ssh-rsa manager-key cos\n")
+	assertMetadata(t, &received, "custom", "keep")
+}
+
+func stringPtr(value string) *string { return &value }
 
 func TestLabels(t *testing.T) {
 	tests := map[string]struct {
