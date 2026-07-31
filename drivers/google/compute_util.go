@@ -537,6 +537,9 @@ func (c *ComputeUtil) uploadSSHKey(instance *raw.Instance, sshKeyPath string) er
 	log.Infof("Uploading SSH Key")
 
 	metadata := instance.Metadata
+	if metadata == nil {
+		metadata = &raw.Metadata{}
+	}
 	// "sshKeys" was deprecated in favor of "ssh-keys" metadata key. However, old images may still depend
 	// on the old metadata configuration. And users may still have legitimate reasons to use these older
 	// images. As instance metadata is a simple key-value store, it should have no problems with having

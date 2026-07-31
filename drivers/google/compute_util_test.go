@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,40 @@ func TestAdditionalTags(t *testing.T) {
 	tags := parseTags(&Driver{Tags: "tag1,tag2"})
 
 	assert.Equal(t, []string{"docker-machine", "tag1", "tag2"}, tags)
+}
+
+func TestUploadSSHKeyInitializesMissingInstanceMetadata(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "id_rsa")
+	require.NoError(t, os.WriteFile(keyPath+".pub", []byte("ssh-rsa test-key\n"), 0600))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/setMetadata") && !strings.Contains(r.URL.Path, "/operations/op-metadata/wait") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		body, _ := googleapi.WithoutDataWrapper.JSONReader(raw.Operation{Name: "op-metadata", Status: "DONE"})
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	svc, err := raw.NewService(context.Background(), option.WithoutAuthentication(), option.WithEndpoint(srv.URL))
+	require.NoError(t, err)
+	c := &ComputeUtil{
+		service:      svc,
+		project:      "p",
+		zone:         "us-east1-c",
+		instanceName: "runner-abc",
+		userName:     "cos",
+		operationBackoffFactory: &backoffFactory{
+			InitialInterval:     time.Millisecond,
+			RandomizationFactor: 0,
+			Multiplier:          2,
+			MaxInterval:         10 * time.Millisecond,
+			MaxElapsedTime:      time.Second,
+		},
+	}
+
+	require.NoError(t, c.uploadSSHKey(&raw.Instance{}, keyPath))
 }
 
 func TestLabels(t *testing.T) {
