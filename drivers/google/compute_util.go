@@ -563,15 +563,16 @@ func (c *ComputeUtil) uploadSSHKey(instance *raw.Instance, sshKeyPath string) er
 // images. It has no API side effects so bulkInsert can include the same key in
 // its initial instance properties.
 func sshKeyMetadata(userName, sshKeyPath string) ([]*raw.MetadataItems, error) {
+	if userName == "" {
+		return nil, errors.New("SSH username is empty")
+	}
+
 	sshKey, err := ioutil.ReadFile(sshKeyPath + ".pub")
 	if err != nil {
 		return nil, err
 	}
 
 	sshKeyValue := strings.TrimSpace(string(sshKey))
-	if userName == "" {
-		return nil, errors.New("SSH username is empty")
-	}
 	if sshKeyValue == "" {
 		return nil, errors.New("SSH public key is empty")
 	}
@@ -588,6 +589,9 @@ func sshKeyMetadata(userName, sshKeyPath string) ([]*raw.MetadataItems, error) {
 // each SSH metadata value can carry multiple newline-delimited keys.
 func mergeSSHKeyMetadata(metadata *raw.Metadata, sshMetadata []*raw.MetadataItems) {
 	for _, sshItem := range sshMetadata {
+		if sshItem == nil || sshItem.Value == nil {
+			continue
+		}
 		items := make([]*raw.MetadataItems, 0, len(metadata.Items)+1)
 		values := make([]string, 0, 1)
 		for _, item := range metadata.Items {

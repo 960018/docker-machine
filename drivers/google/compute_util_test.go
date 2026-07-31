@@ -73,6 +73,11 @@ func TestUploadSSHKeyInitializesMissingInstanceMetadata(t *testing.T) {
 	require.NoError(t, c.uploadSSHKey(&raw.Instance{}, keyPath))
 }
 
+func TestSSHKeyMetadataRejectsMissingUserBeforeReadingKey(t *testing.T) {
+	_, err := sshKeyMetadata("", "/does/not/exist")
+	require.ErrorContains(t, err, "username is empty")
+}
+
 func TestLabels(t *testing.T) {
 	tests := map[string]struct {
 		labels         []string
