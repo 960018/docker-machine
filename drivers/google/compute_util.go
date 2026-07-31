@@ -585,7 +585,7 @@ func sshKeyMetadata(userName, sshKeyPath string) ([]*raw.MetadataItems, error) {
 // each SSH metadata value can carry multiple newline-delimited keys.
 func mergeSSHKeyMetadata(metadata *raw.Metadata, sshMetadata []*raw.MetadataItems) {
 	for _, sshItem := range sshMetadata {
-		items := metadata.Items[:0]
+		items := make([]*raw.MetadataItems, 0, len(metadata.Items)+1)
 		values := make([]string, 0, 1)
 		for _, item := range metadata.Items {
 			if item.Key == sshItem.Key {
