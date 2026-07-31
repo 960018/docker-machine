@@ -308,7 +308,7 @@ func (c *ComputeUtil) buildBulkInsertInstanceProperties(d *Driver, sel flexSelec
 	if err != nil {
 		return nil, err
 	}
-	metadata.Items = append(metadata.Items, sshMetadata...)
+	mergeSSHKeyMetadata(metadata, sshMetadata)
 
 	// Resolve effective disk parameters: per-selection override when
 	// the selection carries a disk-type, driver defaults otherwise.
@@ -739,8 +739,7 @@ func (c *ComputeUtil) resolvePlacedZone() (string, error) {
 // finishBulkInsertCreate records placement returned by the completed operation.
 // Tags and SSH metadata were sent in the initial request, so no post-placement
 // instance mutation is required before SSH readiness. If operation metadata
-// does not identify one zone, retain the existing AggregatedList fallback so a
-// successful create does not strand a placed VM.
+// does not identify one zone, retain the existing AggregatedList fallback.
 func (c *ComputeUtil) finishBulkInsertCreate(d *Driver, selected flexSelection) error {
 	zone, err := c.resolvePlacedZone()
 	if err != nil {

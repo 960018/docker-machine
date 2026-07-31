@@ -546,7 +546,7 @@ func (c *ComputeUtil) uploadSSHKey(instance *raw.Instance, sshKeyPath string) er
 	if err != nil {
 		return err
 	}
-	metadata.Items = append(metadata.Items, sshMetadata...)
+	mergeSSHKeyMetadata(metadata, sshMetadata)
 
 	op, err := c.service.Instances.SetMetadata(c.project, c.zone, c.instanceName, metadata).Do()
 	if err != nil {
@@ -565,11 +565,44 @@ func sshKeyMetadata(userName, sshKeyPath string) ([]*raw.MetadataItems, error) {
 		return nil, err
 	}
 
-	value := fmt.Sprintf("%s:%s %s\n", userName, strings.TrimSpace(string(sshKey)), userName)
+	sshKeyValue := strings.TrimSpace(string(sshKey))
+	if userName == "" {
+		return nil, errors.New("SSH username is empty")
+	}
+	if sshKeyValue == "" {
+		return nil, errors.New("SSH public key is empty")
+	}
+
+	value := fmt.Sprintf("%s:%s %s\n", userName, sshKeyValue, userName)
 	return []*raw.MetadataItems{
 		{Key: "sshKeys", Value: &value},
 		{Key: "ssh-keys", Value: &value},
 	}, nil
+}
+
+// mergeSSHKeyMetadata keeps operator-provided SSH keys while adding the
+// manager key. GCE rejects duplicate metadata keys in one create request, but
+// each SSH metadata value can carry multiple newline-delimited keys.
+func mergeSSHKeyMetadata(metadata *raw.Metadata, sshMetadata []*raw.MetadataItems) {
+	for _, sshItem := range sshMetadata {
+		items := metadata.Items[:0]
+		values := make([]string, 0, 1)
+		for _, item := range metadata.Items {
+			if item.Key == sshItem.Key {
+				if item.Value != nil && *item.Value != "" {
+					values = append(values, strings.TrimRight(*item.Value, "\n"))
+				}
+				continue
+			}
+			items = append(items, item)
+		}
+		value := strings.Join(values, "\n")
+		if value != "" {
+			value += "\n"
+		}
+		value += *sshItem.Value
+		metadata.Items = append(items, &raw.MetadataItems{Key: sshItem.Key, Value: &value})
+	}
 }
 
 // prepareMetadata prepares instance metadata entries from provided configuration

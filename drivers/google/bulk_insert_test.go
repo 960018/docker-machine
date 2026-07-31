@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -201,6 +202,7 @@ func TestBuildBulkInsertInstanceProperties_BareNamesAndSelectionFields(t *testin
 		diskTypeURL:    "pd-balanced",
 		globalURL:      apiURL + "p/global",
 		accelerator:    "count=1,type=nvidia-tesla-t4",
+		userName:       "cos",
 	}
 
 	sel := flexSelection{
@@ -266,6 +268,44 @@ func TestBuildBulkInsertInstanceProperties_IncludesSSHMetadata(t *testing.T) {
 	assert.Contains(t, props.Tags.Items, firewallTargetTag)
 }
 
+func TestBuildBulkInsertInstanceProperties_MergesOperatorSSHMetadata(t *testing.T) {
+	d := newBulkInsertTestDriver(t)
+	d.MachineImage = "ubuntu-os-cloud/global/images/ubuntu-2204"
+	d.DiskSize = 20
+	d.ServiceAccount = defaultServiceAccount
+	d.Scopes = defaultScopes
+	d.Metadata = map[string]string{
+		"ssh-keys": "operator:ssh-rsa operator-key operator\n",
+		"sshKeys":  "legacy:ssh-rsa legacy-key legacy\n",
+	}
+	c := &ComputeUtil{
+		project:        "p",
+		networkProject: "p",
+		diskTypeURL:    "pd-balanced",
+		globalURL:      apiURL + "p/global",
+		userName:       "cos",
+	}
+
+	props, err := c.buildBulkInsertInstanceProperties(d, flexSelection{MachineType: "n4-standard-2"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, countMetadataKey(props.Metadata, "ssh-keys"))
+	assert.Equal(t, 1, countMetadataKey(props.Metadata, "sshKeys"))
+	assertMetadataValue(t, props.Metadata, "ssh-keys", "operator:ssh-rsa operator-key operator\ncos:ssh-rsa test-key cos\n")
+	assertMetadataValue(t, props.Metadata, "sshKeys", "legacy:ssh-rsa legacy-key legacy\ncos:ssh-rsa test-key cos\n")
+}
+
+func TestSSHKeyMetadataRejectsMissingUserOrKey(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "id_rsa")
+	require.NoError(t, os.WriteFile(keyPath+".pub", []byte("ssh-rsa test-key\n"), 0600))
+
+	_, err := sshKeyMetadata("", keyPath)
+	require.ErrorContains(t, err, "username is empty")
+
+	require.NoError(t, os.WriteFile(keyPath+".pub", nil, 0600))
+	_, err = sshKeyMetadata("cos", keyPath)
+	require.ErrorContains(t, err, "public key is empty")
+}
+
 func assertMetadataValue(t *testing.T, metadata *raw.Metadata, key, want string) {
 	t.Helper()
 	for _, item := range metadata.Items {
@@ -276,6 +316,16 @@ func assertMetadataValue(t *testing.T, metadata *raw.Metadata, key, want string)
 		}
 	}
 	t.Fatalf("metadata key %q not found", key)
+}
+
+func countMetadataKey(metadata *raw.Metadata, key string) int {
+	count := 0
+	for _, item := range metadata.Items {
+		if item.Key == key {
+			count++
+		}
+	}
+	return count
 }
 
 func newBulkInsertTestDriver(t *testing.T) *Driver {
@@ -310,6 +360,7 @@ func TestBuildBulkInsertInstanceProperties_SelectionWithoutDiskOverride(t *testi
 		networkProject: "p",
 		diskTypeURL:    "pd-balanced",
 		globalURL:      apiURL + "p/global",
+		userName:       "cos",
 	}
 
 	sel := flexSelection{MachineType: "n2d-standard-2"}
@@ -666,6 +717,7 @@ func newBulkInsertComputeUtil(t *testing.T, srv *httptest.Server) *ComputeUtil {
 		instanceName: "runner-abc",
 		project:      "p",
 		zone:         "us-east1-c",
+		userName:     "cos",
 		globalURL:    apiURL + "p/global",
 		service:      svc,
 		bulkInsert:   true,
@@ -862,8 +914,11 @@ func TestCreateInstanceViaBulkInsert_LoopAdvancesOnSyncStockout(t *testing.T) {
 
 func TestCreateInstanceViaBulkInsert_NoPostCreateMutation(t *testing.T) {
 	var calls []string
+	var callsMu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callsMu.Lock()
 		calls = append(calls, r.Method+" "+r.URL.Path)
+		callsMu.Unlock()
 		var op raw.Operation
 		switch {
 		case strings.Contains(r.URL.Path, "/instances/bulkInsert"):
@@ -879,7 +934,8 @@ func TestCreateInstanceViaBulkInsert_NoPostCreateMutation(t *testing.T) {
 				},
 			}
 		default:
-			t.Fatalf("unexpected post-bulkInsert request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 		body, _ := googleapi.WithoutDataWrapper.JSONReader(op)
 		fmt.Fprint(w, body)
@@ -895,6 +951,8 @@ func TestCreateInstanceViaBulkInsert_NoPostCreateMutation(t *testing.T) {
 	err := c.createInstanceViaBulkInsert(d)
 
 	require.NoError(t, err)
+	callsMu.Lock()
+	defer callsMu.Unlock()
 	assert.Equal(t, "us-east1-d", d.ResolvedZone)
 	assert.Equal(t, "n4-standard-2", d.ResolvedMachineType)
 	assert.Equal(t, []string{
@@ -905,8 +963,11 @@ func TestCreateInstanceViaBulkInsert_NoPostCreateMutation(t *testing.T) {
 
 func TestCreateInstanceViaBulkInsert_FallsBackToAggregatedListForZone(t *testing.T) {
 	var calls []string
+	var callsMu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callsMu.Lock()
 		calls = append(calls, r.Method+" "+r.URL.Path)
+		callsMu.Unlock()
 		switch {
 		case strings.Contains(r.URL.Path, "/instances/bulkInsert"):
 			body, _ := googleapi.WithoutDataWrapper.JSONReader(raw.Operation{Name: "op-bulk-1", Status: "RUNNING"})
@@ -925,22 +986,81 @@ func TestCreateInstanceViaBulkInsert_FallsBackToAggregatedListForZone(t *testing
 			})
 			fmt.Fprint(w, body)
 		default:
-			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 	}))
 	defer srv.Close()
 
 	c := newBulkInsertComputeUtil(t, srv)
 	c.regionExplicit = "us-east1"
+	c.userName = "cos"
 	c.flexSelections = []string{"machine-type=n4-standard-2"}
 	d := newBulkInsertTestDriver(t)
 
 	require.NoError(t, c.createInstanceViaBulkInsert(d))
+	callsMu.Lock()
+	defer callsMu.Unlock()
 	assert.Equal(t, "us-east1-c", d.ResolvedZone)
 	assert.Equal(t, []string{
 		"POST /projects/p/regions/us-east1/instances/bulkInsert",
 		"POST /projects/p/regions/us-east1/operations/op-bulk-1/wait",
 		"GET /projects/p/aggregated/instances",
+	}, calls)
+}
+
+func TestCreateInstanceViaBulkInsert_UsesSuccessfulFallbackSelection(t *testing.T) {
+	var bulkInsertCalls atomic.Int32
+	var calls []string
+	var callsMu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callsMu.Lock()
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		callsMu.Unlock()
+		switch {
+		case strings.Contains(r.URL.Path, "/instances/bulkInsert"):
+			if bulkInsertCalls.Add(1) == 1 {
+				writeJSONError(w, http.StatusServiceUnavailable, stockout503Body)
+				return
+			}
+			body, _ := googleapi.WithoutDataWrapper.JSONReader(raw.Operation{Name: "op-bulk-2", Status: "RUNNING"})
+			fmt.Fprint(w, body)
+		case strings.Contains(r.URL.Path, "/operations/op-bulk-2"):
+			body, _ := googleapi.WithoutDataWrapper.JSONReader(raw.Operation{
+				Name:   "op-bulk-2",
+				Status: "DONE",
+				InstancesBulkInsertOperationMetadata: &raw.InstancesBulkInsertOperationMetadata{
+					PerLocationStatus: map[string]raw.BulkInsertOperationStatus{
+						"zones/us-east1-c": {CreatedVmCount: 1, TargetVmCount: 1, Status: "DONE"},
+					},
+				},
+			})
+			fmt.Fprint(w, body)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	c := newBulkInsertComputeUtil(t, srv)
+	c.regionExplicit = "us-east1"
+	c.userName = "cos"
+	c.flexSelections = []string{
+		"machine-type=n4d-standard-2",
+		"machine-type=n2d-standard-2",
+	}
+	d := newBulkInsertTestDriver(t)
+
+	require.NoError(t, c.createInstanceViaBulkInsert(d))
+	assert.Equal(t, int32(2), bulkInsertCalls.Load())
+	assert.Equal(t, "n2d-standard-2", d.ResolvedMachineType)
+	assert.Equal(t, "us-east1-c", d.ResolvedZone)
+	callsMu.Lock()
+	defer callsMu.Unlock()
+	assert.Equal(t, []string{
+		"POST /projects/p/regions/us-east1/instances/bulkInsert",
+		"POST /projects/p/regions/us-east1/instances/bulkInsert",
+		"POST /projects/p/regions/us-east1/operations/op-bulk-2/wait",
 	}, calls)
 }
 
