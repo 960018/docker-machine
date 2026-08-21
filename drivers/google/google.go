@@ -518,16 +518,26 @@ func (d *Driver) PreCreateCheck() error {
 
 	// Check if the instance already exists. There will be an error if the instance
 	// doesn't exist, so just check instance for nil.
-	log.Infof("Check if the instance already exists")
+	//
+	// Skipped when no zone is resolved yet, which only happens on a
+	// bulk-mode first attempt: the lookup never found anything there (it
+	// used to 400 on the empty zone, and with zone recovery it would cost
+	// an AggregatedList per create). A bulk retry after successful
+	// placement has ResolvedZone persisted and keeps the duplicate
+	// protection via a cheap zonal lookup. Direct mode, including
+	// UseExisting, always has a zone.
+	if effectiveZone(d) != "" {
+		log.Infof("Check if the instance already exists")
 
-	instance, _ := c.instance()
-	if d.UseExisting {
-		if instance == nil {
-			return fmt.Errorf("unable to find instance %q in zone %q", d.MachineName, d.Zone)
-		}
-	} else {
-		if instance != nil {
-			return fmt.Errorf("instance %q already exists in zone %q", d.MachineName, d.Zone)
+		instance, _ := c.instance()
+		if d.UseExisting {
+			if instance == nil {
+				return fmt.Errorf("unable to find instance %q in zone %q", d.MachineName, d.Zone)
+			}
+		} else {
+			if instance != nil {
+				return fmt.Errorf("instance %q already exists in zone %q", d.MachineName, d.Zone)
+			}
 		}
 	}
 
