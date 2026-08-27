@@ -9,10 +9,11 @@ import (
 
 type errStateInvalidForSSH struct {
 	HostName string
+	State    state.State
 }
 
 func (e errStateInvalidForSSH) Error() string {
-	return fmt.Sprintf("Error: Cannot run SSH command: Host %q is not running", e.HostName)
+	return fmt.Sprintf("Error: Cannot run SSH command: Host %q is not running (in state %q)", e.HostName, e.State)
 }
 
 func cmdSSH(c CommandLine, api libmachine.API) error {
@@ -39,7 +40,7 @@ func cmdSSH(c CommandLine, api libmachine.API) error {
 	}
 
 	if currentState != state.Running {
-		return errStateInvalidForSSH{host.Name}
+		return errStateInvalidForSSH{HostName: host.Name, State: currentState}
 	}
 
 	client, err := host.CreateSSHClient()
