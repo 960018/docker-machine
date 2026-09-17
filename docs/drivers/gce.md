@@ -28,7 +28,7 @@ through the oauth2 process with `gcloud auth login`.
 
 To create a machine instance, specify `--driver google`, the project id and the machine name.
 
-    $ gcloud auth login
+    $ gcloud auth application-default login
     $ docker-machine create --driver google --google-project PROJECT_ID vm01
     $ docker-machine create --driver google \
       --google-project PROJECT_ID \
