@@ -58,6 +58,11 @@ echo 'GCE readiness metadata unavailable after 3 attempts' >&2
 exit 1`
 }
 
+// cloud-init >= 23.4 exits 2 for "degraded done": finished, but something logged a
+// WARNING. On stock COS every boot is degraded (DataSourceGCELocal fails without a
+// DHCP client), so 2 is treated as done. 1 (error) and 124 (timeout) still fail.
+const cloudInitWaitCmd = `sudo timeout 5m cloud-init status --wait --long; rc=$?; [ "$rc" -eq 2 ] && exit 0; exit "$rc"`
+
 const dockerNetworkVerifierImageCheck = `sudo docker image inspect alpine:latest >/dev/null`
 
 const dockerNetworkProbeContainer = "gitlab-docker-network-readiness-probe"
@@ -222,12 +227,18 @@ func (p *GoogleCOSProvisioner) readinessURL() (string, error) {
 }
 
 func (p *GoogleCOSProvisioner) waitForCloudInit() error {
-	out, err := p.SSHCommand("sudo timeout 5m cloud-init status --wait --long")
-	if out != "" {
-		log.Debugf("cloud-init status output:\n%s", out)
-	}
+	out, err := p.SSHCommand(cloudInitWaitCmd)
 	if err != nil {
+		if out != "" {
+			log.Debugf("cloud-init status output:\n%s", out)
+		}
 		return fmt.Errorf("waiting for cloud-init readiness gate: %w", err)
+	}
+
+	if strings.Contains(out, "degraded") {
+		log.Warnf("cloud-init finished with recoverable errors:\n%s", out)
+	} else if out != "" {
+		log.Debugf("cloud-init status output:\n%s", out)
 	}
 
 	return nil
