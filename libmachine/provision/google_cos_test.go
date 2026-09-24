@@ -2,8 +2,10 @@ package provision
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -132,7 +134,7 @@ func TestDockerNetworkDiagnosticsShellSyntax(t *testing.T) {
 
 func TestGoogleCOSCloudInitFailure(t *testing.T) {
 	commander := &scriptedSSHCommander{responses: map[string][]scriptedSSHResponse{
-		"sudo timeout 5m cloud-init status --wait --long": {{
+		cloudInitWaitCmd: {{
 			out: "status: error\ndetail: gpu-driver.service failed\n",
 			err: errors.New("exit status 1"),
 		}},
@@ -142,6 +144,52 @@ func TestGoogleCOSCloudInitFailure(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "waiting for cloud-init readiness gate")
+}
+
+func TestGoogleCOSCloudInitDegradedDone(t *testing.T) {
+	commander := &scriptedSSHCommander{responses: map[string][]scriptedSSHResponse{
+		cloudInitWaitCmd: {{
+			out: "status: done\nextended_status: degraded done\nrecoverable_errors:\nWARNING:\n\t- Getting data from DataSourceGCELocal failed\n",
+		}},
+	}}
+
+	require.NoError(t, newGoogleCOSProvisionerForTest(commander).waitForCloudInit())
+}
+
+// The remote shell maps cloud-init's exit codes: 0 and 2 (degraded done) pass,
+// anything else, including 124 from timeout, is returned unchanged.
+func TestGoogleCOSCloudInitWaitExitCodes(t *testing.T) {
+	for _, tt := range []struct {
+		cloudInitExit int
+		wantExit      int
+	}{
+		{0, 0},
+		{2, 0},
+		{1, 1},
+		{124, 124},
+	} {
+		dir := t.TempDir()
+		writeFakeCommand(t, dir, "sudo", "#!/bin/sh\nexec \"$@\"\n")
+		writeFakeCommand(t, dir, "timeout", "#!/bin/sh\nshift\nexec \"$@\"\n")
+		writeFakeCommand(t, dir, "cloud-init", fmt.Sprintf("#!/bin/sh\nexit %d\n", tt.cloudInitExit))
+
+		cmd := exec.Command("sh", "-c", cloudInitWaitCmd)
+		cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"))
+		err := cmd.Run()
+
+		if tt.wantExit == 0 {
+			assert.NoError(t, err, "cloud-init exit %d", tt.cloudInitExit)
+			continue
+		}
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr, "cloud-init exit %d", tt.cloudInitExit)
+		assert.Equal(t, tt.wantExit, exitErr.ExitCode(), "cloud-init exit %d", tt.cloudInitExit)
+	}
+}
+
+func writeFakeCommand(t *testing.T, dir, name, script string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755))
 }
 
 func TestVerifyDockerBridgeNetworkRequiresPreloadedImage(t *testing.T) {
