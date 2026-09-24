@@ -58,6 +58,12 @@ echo 'GCE readiness metadata unavailable after 3 attempts' >&2
 exit 1`
 }
 
+// Not `cloud-init status --wait`: on stock COS it exits 1 while cloud-init is still
+// running (the cloud-init services show as disabled) and 2 once done (DataSourceGCELocal
+// warning), so the wait is on cloud-init.target and status is only asked for errors
+// afterwards. Exit 2 is done with warnings, not a failed boot.
+const cloudInitWaitCmd = `sudo timeout 5m systemctl start cloud-init.target || exit $?; sudo cloud-init status --long; rc=$?; [ "$rc" -eq 2 ] && exit 0; exit $rc`
+
 const dockerNetworkVerifierImageCheck = `sudo docker image inspect alpine:latest >/dev/null`
 
 const dockerNetworkProbeContainer = "gitlab-docker-network-readiness-probe"
@@ -222,12 +228,18 @@ func (p *GoogleCOSProvisioner) readinessURL() (string, error) {
 }
 
 func (p *GoogleCOSProvisioner) waitForCloudInit() error {
-	out, err := p.SSHCommand("sudo timeout 5m cloud-init status --wait --long")
-	if out != "" {
-		log.Debugf("cloud-init status output:\n%s", out)
-	}
+	out, err := p.SSHCommand(cloudInitWaitCmd)
 	if err != nil {
+		if out != "" {
+			log.Debugf("cloud-init status output:\n%s", out)
+		}
 		return fmt.Errorf("waiting for cloud-init readiness gate: %w", err)
+	}
+
+	if strings.Contains(out, "degraded") {
+		log.Warnf("cloud-init finished with recoverable errors:\n%s", out)
+	} else if out != "" {
+		log.Debugf("cloud-init status output:\n%s", out)
 	}
 
 	return nil
